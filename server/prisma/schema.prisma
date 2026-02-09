@@ -1,0 +1,36 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Message {
+  id              String   @id @default(uuid())
+  direction       String
+  from            String
+  to              String
+  text            String?
+  status          String?
+  telnyxMessageId String?
+  telnyxEventId   String?
+  occurredAt      DateTime?
+  createdAt       DateTime @default(now())
+  raw             Json?
+}
+
+model FromNumber {
+  id         String   @id @default(uuid())
+  number     String   @unique
+  firstUsedAt DateTime @default(now())
+  lastUsedAt  DateTime @default(now())
+}
+
+model ToNumber {
+  id         String   @id @default(uuid())
+  number     String   @unique
+  firstUsedAt DateTime @default(now())
+  lastUsedAt  DateTime @default(now())
+}

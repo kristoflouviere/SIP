@@ -1,0 +1,20 @@
+{
+  "name": "sip-texting",
+  "version": "1.0.0",
+  "description": "SIP texting management app",
+  "scripts": {
+    "dev": "concurrently -k \"npm run dev -w client\" \"npm run dev -w server\"",
+    "build": "npm run build -w client",
+    "start": "npm run start -w server"
+  },
+  "workspaces": [
+    "client",
+    "server"
+  ],
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "devDependencies": {
+    "concurrently": "^9.0.1"
+  }
+}

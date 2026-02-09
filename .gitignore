@@ -1,0 +1,7 @@
+node_modules
+.env
+.env.*
+client/dist
+server/node_modules
+client/node_modules
+prisma/dev.db
