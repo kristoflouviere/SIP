@@ -3,7 +3,6 @@ services:
     name: sip-texting-api
     runtime: node
     rootDir: server
-    plan: free
     buildCommand: npm install && npm run generate
     startCommand: npm run start
     envVars:
@@ -22,8 +21,8 @@ services:
     name: sip-texting-client
     runtime: static
     rootDir: client
-    plan: free
     buildCommand: npm install && npm run build
+    staticPublishPath: dist
     envVars:
       - key: VITE_API_BASE_URL
         sync: false
