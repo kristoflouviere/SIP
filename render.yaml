@@ -2,9 +2,9 @@ services:
   - type: web
     name: sip-texting-api
     runtime: node
-    rootDir: server
-    buildCommand: npm ci && npm run generate
-    startCommand: npm run start
+    plan: starter
+    buildCommand: cd server && npm ci && npm run generate
+    startCommand: cd server && npm run start
     healthCheckPath: /health
     envVars:
       - key: DATABASE_URL
@@ -16,10 +16,9 @@ services:
       - key: SYNC_LOOKBACK_DAYS
         value: "30"
 
-  - type: web
+  - type: static
     name: sip-texting-client
-    runtime: static
-    buildCommand: npm ci && npm run build
+    buildCommand: cd client && npm ci && npm run build
     staticPublishPath: client/dist
     envVars:
       - key: VITE_API_BASE_URL
