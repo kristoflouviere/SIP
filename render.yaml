@@ -23,7 +23,7 @@ services:
     name: sip-texting-client
     runtime: static
     rootDir: client
-    buildCommand: npm ci --include=optional && npm run build
+    buildCommand: npm install --include=optional && npm run build
     staticPublishPath: dist
     envVars:
       - key: NODE_VERSION
