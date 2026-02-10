@@ -23,7 +23,7 @@ services:
     name: sip-texting-client
     runtime: static
     rootDir: client
-    buildCommand: rm -f package-lock.json && npm install --include=optional && npm run build
+    buildCommand: rm -f package-lock.json && npm install --include=optional && npm install @rollup/rollup-linux-x64-gnu --no-save && npm run build
     staticPublishPath: dist
     envVars:
       - key: NODE_VERSION
