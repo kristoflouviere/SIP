@@ -8,6 +8,8 @@ services:
     startCommand: npm run start
     healthCheckPath: /health
     envVars:
+      - key: NODE_VERSION
+        value: "20"
       - key: DATABASE_URL
         sync: false
       - key: TELNYX_API_KEY
@@ -24,5 +26,7 @@ services:
     buildCommand: npm ci --include=optional && npm run build
     staticPublishPath: dist
     envVars:
+      - key: NODE_VERSION
+        value: "20"
       - key: VITE_API_BASE_URL
         sync: false
