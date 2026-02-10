@@ -11,7 +11,9 @@ const prisma = new PrismaClient();
 
 const PORT = process.env.PORT || 3001;
 const TELNYX_API_KEY = process.env.TELNYX_API_KEY || "";
-const SYNC_ON_STARTUP = (process.env.SYNC_ON_STARTUP || "true").toLowerCase() === "true";
+const defaultSyncOnStartup = process.env.NODE_ENV === "production" ? "false" : "true";
+const SYNC_ON_STARTUP =
+  (process.env.SYNC_ON_STARTUP || defaultSyncOnStartup).toLowerCase() === "true";
 const SYNC_LOOKBACK_DAYS = Number(process.env.SYNC_LOOKBACK_DAYS || 30);
 
 app.use(cors());
