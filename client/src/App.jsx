@@ -611,50 +611,199 @@ function App() {
   };
 
   return (
-    <div className="app-shell">
-      <aside className="side-nav">
-        <div className="nav-brand">
-          <span className="eyebrow">Secondary nav</span>
-          <h2>Workspace</h2>
+    <div className="app">
+      <header className="app-header">
+        <div>
+          <p className="eyebrow">SIP Texting</p>
+          <h1>Telnyx Messaging Console</h1>
+          <p className="subtitle">
+            Manage inbound and outbound SMS across your SIP-enabled numbers.
+          </p>
         </div>
-        <div className="nav-links">
-          <button
-            type="button"
-            className={`nav-link ${activeView === "console" ? "active" : ""}`}
-            onClick={() => setActiveView("console")}
-          >
-            Console
-          </button>
-          <button
-            type="button"
-            className={`nav-link ${activeView === "database" ? "active" : ""}`}
-            onClick={() => setActiveView("database")}
-          >
-            Database
-          </button>
-        </div>
-      </aside>
+        <button
+          className="ghost"
+          onClick={activeView === "console" ? handleRefresh : refreshDatabase}
+        >
+          {activeView === "console" ? "Refresh" : "Refresh database"}
+        </button>
+      </header>
 
-      <main className="app">
-        <header className="app-header">
-          <div>
-            <p className="eyebrow">SIP Texting</p>
-            <h1>Telnyx Messaging Console</h1>
-            <p className="subtitle">
-              Manage inbound and outbound SMS across your SIP-enabled numbers.
-            </p>
+      <div className="top-area">
+        <div className="top-nav">
+          <span className="eyebrow">Secondary nav</span>
+          <div className="nav-links">
+            <button
+              type="button"
+              className={`nav-link ${activeView === "console" ? "active" : ""}`}
+              onClick={() => setActiveView("console")}
+            >
+              Console
+            </button>
+            <button
+              type="button"
+              className={`nav-link ${activeView === "database" ? "active" : ""}`}
+              onClick={() => setActiveView("database")}
+            >
+              Database
+            </button>
           </div>
-          <button
-            className="ghost"
-            onClick={activeView === "console" ? handleRefresh : refreshDatabase}
-          >
-            {activeView === "console" ? "Refresh" : "Refresh database"}
-          </button>
-        </header>
+        </div>
 
         {activeView === "console" ? (
-          <>
-            <section className="grid">
+          <section className="conversation-board">
+            <div className="conversation-head">
+              <div>
+                <p className="eyebrow">Production console</p>
+                <h2>Conversation overview</h2>
+              </div>
+              <div className="conversation-actions">
+                <span className="badge">
+                  {selectedOwner ? selectedOwner : "No owned number"}
+                </span>
+                <button
+                  className="ghost"
+                  onClick={() => loadConversations(selectedOwner)}
+                >
+                  Refresh conversations
+                </button>
+                <button
+                  className="ghost"
+                  type="button"
+                  onClick={() => rebuildConversations(selectedOwner)}
+                >
+                  Rebuild conversations
+                </button>
+              </div>
+            </div>
+
+            <div className="owner-row">
+              {fromNumbers.length === 0 ? (
+                <p className="muted">No owned numbers yet.</p>
+              ) : (
+                fromNumbers.map((item) => (
+                  <button
+                    key={item.id}
+                    type="button"
+                    className={`owner-chip ${
+                      selectedOwner === item.number ? "active" : ""
+                    }`}
+                    onClick={() => {
+                      setSelectedOwner(item.number);
+                      setSelectedConversation("");
+                    }}
+                  >
+                    {item.number}
+                  </button>
+                ))
+              )}
+            </div>
+
+            <div className="conversation-panel">
+              <div className="conversation-list">
+                <div className="list-header">
+                  <h3>Recent conversations</h3>
+                  <span className="badge">{conversations.length} threads</span>
+                </div>
+                {conversationStatus.loading ? (
+                  <p className="muted">Loading conversations...</p>
+                ) : conversations.length === 0 ? (
+                  <p className="muted">No conversations yet.</p>
+                ) : (
+                  conversations.map((item) => {
+                    const isActive = selectedConversation === item.counterparty;
+                    const isUnread = item.unreadCount > 0;
+                    return (
+                      <button
+                        key={`${item.ownerNumber}-${item.counterparty}`}
+                        type="button"
+                        className={`conversation-item ${
+                          isActive ? "active" : ""
+                        } ${isUnread ? "unread" : ""}`}
+                        onClick={() => setSelectedConversation(item.counterparty)}
+                      >
+                        <div className="conversation-title">
+                          <span>{item.counterparty}</span>
+                          <span className="conversation-time">
+                            {formatTimestamp(item.lastMessageAt)}
+                          </span>
+                        </div>
+                        <div className="conversation-preview">
+                          <span>{item.lastMessageText || "(no text)"}</span>
+                          {isUnread ? <span className="unread-dot" /> : null}
+                        </div>
+                      </button>
+                    );
+                  })
+                )}
+                {conversationStatus.error ? (
+                  <p className="error">{conversationStatus.error}</p>
+                ) : null}
+              </div>
+
+              <div className="conversation-thread">
+                {selectedConversation ? (
+                  <>
+                    <div className="thread-header">
+                      <div>
+                        <p className="eyebrow">Conversation</p>
+                        <h3>{selectedConversation}</h3>
+                      </div>
+                      <span className="badge">
+                        {sortedConversationMessages.length} messages
+                      </span>
+                    </div>
+                    <div className="thread-body">
+                      {sortedConversationMessages.length === 0 ? (
+                        <p className="muted">
+                          No messages in this conversation yet.
+                        </p>
+                      ) : (
+                        sortedConversationMessages.map((message) => {
+                          const directionClass =
+                            message.direction === "inbound" ? "inbound" : "outbound";
+                          return (
+                            <div
+                              key={message.id}
+                              className={`chat-row ${directionClass}`}
+                            >
+                              <div className={`chat-bubble ${directionClass}`}>
+                                <p className="chat-text">
+                                  {message.text || "(no text)"}
+                                </p>
+                                <p className="chat-meta">
+                                  {formatTimestamp(
+                                    message.occurredAt || message.createdAt
+                                  )}
+                                </p>
+                              </div>
+                            </div>
+                          );
+                        })
+                      )}
+                    </div>
+                  </>
+                ) : (
+                  <div className="thread-empty">
+                    <p className="muted">
+                      Select a conversation to view the full message history.
+                    </p>
+                  </div>
+                )}
+              </div>
+            </div>
+          </section>
+        ) : null}
+      </div>
+
+      <div className="section-divider" />
+
+      {activeView === "console" ? (
+        <section className="dev-container">
+          <div className="dev-header">
+            <p className="eyebrow">Development console</p>
+            <h2>Testing workspace</h2>
+          </div>
+          <section className="grid">
         <div className="stack">
           <form className="card send-card" onSubmit={handleSend}>
             <h2>Send a message</h2>
@@ -900,146 +1049,10 @@ function App() {
         </div>
       </section>
 
-        <section className="conversation-board">
-        <div className="conversation-head">
-          <div>
-            <p className="eyebrow">Production console</p>
-            <h2>Conversation overview</h2>
-          </div>
-          <div className="conversation-actions">
-            <span className="badge">
-              {selectedOwner ? selectedOwner : "No owned number"}
-            </span>
-            <button className="ghost" onClick={() => loadConversations(selectedOwner)}>
-              Refresh conversations
-            </button>
-            <button
-              className="ghost"
-              type="button"
-              onClick={() => rebuildConversations(selectedOwner)}
-            >
-              Rebuild conversations
-            </button>
-          </div>
-        </div>
-
-        <div className="owner-row">
-          {fromNumbers.length === 0 ? (
-            <p className="muted">No owned numbers yet.</p>
-          ) : (
-            fromNumbers.map((item) => (
-              <button
-                key={item.id}
-                type="button"
-                className={`owner-chip ${
-                  selectedOwner === item.number ? "active" : ""
-                }`}
-                onClick={() => {
-                  setSelectedOwner(item.number);
-                  setSelectedConversation("");
-                }}
-              >
-                {item.number}
-              </button>
-            ))
-          )}
-        </div>
-
-        <div className="conversation-panel">
-          <div className="conversation-list">
-            <div className="list-header">
-              <h3>Recent conversations</h3>
-              <span className="badge">{conversations.length} threads</span>
-            </div>
-            {conversationStatus.loading ? (
-              <p className="muted">Loading conversations...</p>
-            ) : conversations.length === 0 ? (
-              <p className="muted">No conversations yet.</p>
-            ) : (
-              conversations.map((item) => {
-                const isActive = selectedConversation === item.counterparty;
-                const isUnread = item.unreadCount > 0;
-                return (
-                  <button
-                    key={`${item.ownerNumber}-${item.counterparty}`}
-                    type="button"
-                    className={`conversation-item ${
-                      isActive ? "active" : ""
-                    } ${isUnread ? "unread" : ""}`}
-                    onClick={() => setSelectedConversation(item.counterparty)}
-                  >
-                    <div className="conversation-title">
-                      <span>{item.counterparty}</span>
-                      <span className="conversation-time">
-                        {formatTimestamp(item.lastMessageAt)}
-                      </span>
-                    </div>
-                    <div className="conversation-preview">
-                      <span>{item.lastMessageText || "(no text)"}</span>
-                      {isUnread ? <span className="unread-dot" /> : null}
-                    </div>
-                  </button>
-                );
-              })
-            )}
-            {conversationStatus.error ? (
-              <p className="error">{conversationStatus.error}</p>
-            ) : null}
-          </div>
-
-          <div className="conversation-thread">
-            {selectedConversation ? (
-              <>
-                <div className="thread-header">
-                  <div>
-                    <p className="eyebrow">Conversation</p>
-                    <h3>{selectedConversation}</h3>
-                  </div>
-                  <span className="badge">
-                    {sortedConversationMessages.length} messages
-                  </span>
-                </div>
-                <div className="thread-body">
-                  {sortedConversationMessages.length === 0 ? (
-                    <p className="muted">No messages in this conversation yet.</p>
-                  ) : (
-                    sortedConversationMessages.map((message) => {
-                      const directionClass =
-                        message.direction === "inbound" ? "inbound" : "outbound";
-                      return (
-                        <div
-                          key={message.id}
-                          className={`chat-row ${directionClass}`}
-                        >
-                          <div className={`chat-bubble ${directionClass}`}>
-                            <p className="chat-text">
-                              {message.text || "(no text)"}
-                            </p>
-                            <p className="chat-meta">
-                              {formatTimestamp(
-                                message.occurredAt || message.createdAt
-                              )}
-                            </p>
-                          </div>
-                        </div>
-                      );
-                    })
-                  )}
-                </div>
-              </>
-            ) : (
-              <div className="thread-empty">
-                <p className="muted">
-                  Select a conversation to view the full message history.
-                </p>
-              </div>
-            )}
-          </div>
-        </div>
-            </section>
-          </>
-        ) : (
-          <section className="db-view">
+          </section>
+        </section>
+      ) : (
+        <section className="db-view">
             <div className="db-head">
               <div>
                 <p className="eyebrow">Database</p>
@@ -1221,9 +1234,8 @@ function App() {
                 })
               )}
             </div>
-          </section>
-        )}
-      </main>
+        </section>
+      )}
     </div>
   );
 }
