@@ -16,6 +16,222 @@ const SYNC_ON_STARTUP =
   (process.env.SYNC_ON_STARTUP || defaultSyncOnStartup).toLowerCase() === "true";
 const SYNC_LOOKBACK_DAYS = Number(process.env.SYNC_LOOKBACK_DAYS || 30);
 
+const tableConfig = {
+  Message: {
+    fields: [
+      "id",
+      "direction",
+      "from",
+      "to",
+      "text",
+      "status",
+      "telnyxMessageId",
+      "telnyxEventId",
+      "occurredAt",
+      "createdAt",
+      "raw"
+    ],
+    searchableFields: ["direction", "from", "to", "text", "status"],
+    fieldTypes: {
+      id: "string",
+      direction: "string",
+      from: "string",
+      to: "string",
+      text: "string",
+      status: "string",
+      telnyxMessageId: "string",
+      telnyxEventId: "string",
+      occurredAt: "datetime",
+      createdAt: "datetime",
+      raw: "json"
+    },
+    defaultSort: "createdAt"
+  },
+  MessageEvent: {
+    fields: [
+      "id",
+      "telnyxEventId",
+      "telnyxMessageId",
+      "eventType",
+      "status",
+      "occurredAt",
+      "payload",
+      "messageId",
+      "createdAt"
+    ],
+    searchableFields: ["eventType", "status", "telnyxMessageId", "telnyxEventId"],
+    fieldTypes: {
+      id: "string",
+      telnyxEventId: "string",
+      telnyxMessageId: "string",
+      eventType: "string",
+      status: "string",
+      occurredAt: "datetime",
+      payload: "json",
+      messageId: "string",
+      createdAt: "datetime"
+    },
+    defaultSort: "occurredAt"
+  },
+  Conversation: {
+    fields: [
+      "id",
+      "ownerNumber",
+      "counterparty",
+      "lastMessageAt",
+      "lastMessageText",
+      "lastMessageDirection",
+      "lastMessageId",
+      "unreadCount",
+      "lastReadAt",
+      "createdAt",
+      "updatedAt"
+    ],
+    searchableFields: ["ownerNumber", "counterparty", "lastMessageText"],
+    fieldTypes: {
+      id: "string",
+      ownerNumber: "string",
+      counterparty: "string",
+      lastMessageAt: "datetime",
+      lastMessageText: "string",
+      lastMessageDirection: "string",
+      lastMessageId: "string",
+      unreadCount: "number",
+      lastReadAt: "datetime",
+      createdAt: "datetime",
+      updatedAt: "datetime"
+    },
+    defaultSort: "lastMessageAt"
+  },
+  FromNumber: {
+    fields: ["id", "number", "firstUsedAt", "lastUsedAt"],
+    searchableFields: ["number"],
+    fieldTypes: {
+      id: "string",
+      number: "string",
+      firstUsedAt: "datetime",
+      lastUsedAt: "datetime"
+    },
+    defaultSort: "lastUsedAt"
+  },
+  ToNumber: {
+    fields: ["id", "number", "firstUsedAt", "lastUsedAt"],
+    searchableFields: ["number"],
+    fieldTypes: {
+      id: "string",
+      number: "string",
+      firstUsedAt: "datetime",
+      lastUsedAt: "datetime"
+    },
+    defaultSort: "lastUsedAt"
+  }
+};
+
+const getTableModel = (name) => {
+  switch (name) {
+    case "Message":
+      return prisma.message;
+    case "MessageEvent":
+      return prisma.messageEvent;
+    case "Conversation":
+      return prisma.conversation;
+    case "FromNumber":
+      return prisma.fromNumber;
+    case "ToNumber":
+      return prisma.toNumber;
+    default:
+      return null;
+  }
+};
+
+const parseFilterValue = (type, rawValue) => {
+  if (rawValue === undefined || rawValue === null || rawValue === "") {
+    return null;
+  }
+
+  switch (type) {
+    case "number": {
+      const parsed = Number(rawValue);
+      return Number.isNaN(parsed) ? null : parsed;
+    }
+    case "boolean":
+      if (rawValue === "true") {
+        return true;
+      }
+      if (rawValue === "false") {
+        return false;
+      }
+      return null;
+    case "datetime": {
+      const parsed = new Date(rawValue);
+      return Number.isNaN(parsed.getTime()) ? null : parsed;
+    }
+    case "json":
+      try {
+        return JSON.parse(rawValue);
+      } catch (error) {
+        return null;
+      }
+    default:
+      return String(rawValue);
+  }
+};
+
+const buildWhereClause = (config, { search, filters }) => {
+  const and = [];
+
+  if (search && config.searchableFields.length > 0) {
+    and.push({
+      OR: config.searchableFields.map((field) => ({
+        [field]: {
+          contains: search,
+          mode: "insensitive"
+        }
+      }))
+    });
+  }
+
+  if (Array.isArray(filters)) {
+    for (const filter of filters) {
+      const field = filter?.field;
+      const op = filter?.op || "contains";
+      if (!field || !config.fields.includes(field)) {
+        continue;
+      }
+
+      const type = config.fieldTypes[field] || "string";
+      const parsed = parseFilterValue(type, filter?.value);
+      if (parsed === null) {
+        continue;
+      }
+
+      if (type === "string") {
+        and.push({
+          [field]: {
+            contains: String(parsed),
+            mode: "insensitive"
+          }
+        });
+        continue;
+      }
+
+      if (type === "datetime" && op === "gte") {
+        and.push({ [field]: { gte: parsed } });
+        continue;
+      }
+
+      if (type === "datetime" && op === "lte") {
+        and.push({ [field]: { lte: parsed } });
+        continue;
+      }
+
+      and.push({ [field]: parsed });
+    }
+  }
+
+  return and.length > 0 ? { AND: and } : {};
+};
+
 const getMessageTime = (message) => {
   if (message?.occurredAt) {
     return new Date(message.occurredAt);
@@ -222,6 +438,92 @@ app.get("/events", async (req, res) => {
   res.json({ events });
 });
 
+app.get("/db/tables", (_req, res) => {
+  const tables = Object.entries(tableConfig).map(([name, config]) => ({
+    name,
+    fields: config.fields,
+    fieldTypes: config.fieldTypes,
+    defaultSort: config.defaultSort
+  }));
+
+  res.json({ tables });
+});
+
+app.get("/db/table/:name", async (req, res) => {
+  const name = req.params.name;
+  const config = tableConfig[name];
+  const model = getTableModel(name);
+
+  if (!config || !model) {
+    return res.status(404).json({ error: "Unknown table" });
+  }
+
+  const limit = Number(req.query.limit || 200);
+  const offset = Number(req.query.offset || 0);
+  const sortBy = config.fields.includes(req.query.sortBy)
+    ? req.query.sortBy
+    : config.defaultSort;
+  const sortDir = req.query.sortDir === "asc" ? "asc" : "desc";
+  const search = req.query.search ? String(req.query.search) : "";
+  let filters = [];
+
+  if (req.query.filters) {
+    try {
+      filters = JSON.parse(req.query.filters);
+    } catch (error) {
+      return res.status(400).json({ error: "Invalid filters JSON" });
+    }
+  }
+
+  const where = buildWhereClause(config, { search, filters });
+
+  const [count, rows] = await Promise.all([
+    model.count({ where }),
+    model.findMany({
+      where,
+      orderBy: { [sortBy]: sortDir },
+      take: Math.min(limit, 500),
+      skip: Math.max(offset, 0)
+    })
+  ]);
+
+  res.json({ rows, count });
+});
+
+app.post("/db/table/:name/delete", async (req, res) => {
+  const name = req.params.name;
+  const config = tableConfig[name];
+  const model = getTableModel(name);
+  const ids = req.body?.ids;
+
+  if (!config || !model) {
+    return res.status(404).json({ error: "Unknown table" });
+  }
+
+  if (!Array.isArray(ids) || ids.length === 0) {
+    return res.status(400).json({ error: "ids array is required" });
+  }
+
+  const result = await model.deleteMany({
+    where: { id: { in: ids } }
+  });
+
+  res.json({ deleted: result.count });
+});
+
+app.post("/db/table/:name/clear", async (req, res) => {
+  const name = req.params.name;
+  const config = tableConfig[name];
+  const model = getTableModel(name);
+
+  if (!config || !model) {
+    return res.status(404).json({ error: "Unknown table" });
+  }
+
+  const result = await model.deleteMany();
+  res.json({ deleted: result.count });
+});
+
 app.get("/numbers/from", async (_req, res) => {
   const numbers = await prisma.fromNumber.findMany({
     orderBy: { lastUsedAt: "desc" }
@@ -267,10 +569,14 @@ app.get("/conversations/history", async (req, res) => {
     orderBy: { createdAt: "asc" }
   });
 
+  // Primary dedupe store keyed by Telnyx message ID when available.
   const dedupedMap = new Map();
+  // Fallback buckets for messages missing Telnyx IDs.
   const fallbackBuckets = new Map();
+  // Merge window to treat near-simultaneous updates as one message.
   const mergeWindowMs = 120000;
 
+  // First pass: collect by Telnyx message ID or fallback bucket key.
   for (const message of messages) {
     const timestamp = getMessageTime(message);
     const key = message.telnyxMessageId
@@ -278,6 +584,7 @@ app.get("/conversations/history", async (req, res) => {
       : null;
 
     if (key) {
+      // Keep the latest version of a message with the same Telnyx ID.
       const existing = dedupedMap.get(key);
       if (!existing || timestamp > getMessageTime(existing)) {
         dedupedMap.set(key, message);
@@ -285,6 +592,7 @@ app.get("/conversations/history", async (req, res) => {
       continue;
     }
 
+    // Group messages without Telnyx IDs by from/to/text signature.
     const fallbackKey = `fallback:${message.from}|${message.to}|${
       message.text || ""
     }`;
@@ -293,11 +601,13 @@ app.get("/conversations/history", async (req, res) => {
     fallbackBuckets.set(fallbackKey, bucket);
   }
 
+  // Second pass: dedupe fallback buckets and avoid duplicates of Telnyx-ID rows.
   for (const bucket of fallbackBuckets.values()) {
     bucket.sort((a, b) => getMessageTime(a) - getMessageTime(b));
 
     for (const message of bucket) {
       const timestamp = getMessageTime(message).getTime();
+      // Skip if a near-time Telnyx-ID message matches this fallback entry.
       const bestMatch = Array.from(dedupedMap.values()).find((candidate) => {
         if (!candidate.telnyxMessageId) {
           return false;
@@ -316,6 +626,7 @@ app.get("/conversations/history", async (req, res) => {
         continue;
       }
 
+      // Otherwise, dedupe fallback entries within the same second.
       const fallbackTime = Math.floor(timestamp / 1000);
       const fallbackId = `fallback:${message.from}|${message.to}|${
         message.text || ""

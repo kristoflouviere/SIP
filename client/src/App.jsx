@@ -106,6 +106,9 @@ function App() {
   const [form, setForm] = useState({ from: "", to: "", text: "" });
   const [status, setStatus] = useState({ loading: false, error: "", success: "" });
   const [eventStatus, setEventStatus] = useState({ loading: false, error: "" });
+  const [activeView, setActiveView] = useState("console");
+  const [dbTables, setDbTables] = useState([]);
+  const [dbState, setDbState] = useState({});
   const [selectedOwner, setSelectedOwner] = useState("");
   const [conversations, setConversations] = useState([]);
   const [selectedConversation, setSelectedConversation] = useState("");
@@ -123,6 +126,104 @@ function App() {
       setMessages(data.messages || []);
     } catch (error) {
       setStatus((prev) => ({ ...prev, error: error.message }));
+    }
+  };
+
+  const loadDbTables = async () => {
+    try {
+      const response = await fetch(`${baseUrl}/db/tables`);
+      const data = await response.json();
+      const tables = data.tables || [];
+      setDbTables(tables);
+      setDbState((prev) => {
+        const next = { ...prev };
+        tables.forEach((table) => {
+          if (!next[table.name]) {
+            next[table.name] = {
+              open: false,
+              rows: [],
+              count: 0,
+              loading: false,
+              error: "",
+              search: "",
+              sortBy: table.defaultSort,
+              sortDir: "desc",
+              filters: {},
+              selected: {}
+            };
+          } else if (!next[table.name].sortBy) {
+            next[table.name] = {
+              ...next[table.name],
+              sortBy: table.defaultSort
+            };
+          }
+        });
+        return next;
+      });
+    } catch (error) {
+      setDbState((prev) => ({
+        ...prev,
+        metaError: error.message
+      }));
+    }
+  };
+
+  const fetchTableRows = async (tableName, overrides = {}) => {
+    const table = dbTables.find((item) => item.name === tableName);
+    if (!table) {
+      return;
+    }
+
+    const current = dbState[tableName] || {
+      open: true,
+      rows: [],
+      count: 0,
+      loading: false,
+      error: "",
+      search: "",
+      sortBy: table.defaultSort,
+      sortDir: "desc",
+      filters: {}
+    };
+    const nextState = { ...current, ...overrides };
+
+    setDbState((prev) => ({
+      ...prev,
+      [tableName]: { ...nextState, loading: true, error: "" }
+    }));
+
+    const filters = Object.entries(nextState.filters || {})
+      .filter(([, value]) => value !== "")
+      .map(([field, value]) => ({ field, value }));
+
+    const query = new URLSearchParams({
+      limit: "200",
+      sortBy: nextState.sortBy,
+      sortDir: nextState.sortDir,
+      search: nextState.search || "",
+      filters: JSON.stringify(filters)
+    });
+
+    try {
+      const response = await fetch(
+        `${baseUrl}/db/table/${encodeURIComponent(tableName)}?${query}`
+      );
+      const data = await response.json();
+      setDbState((prev) => ({
+        ...prev,
+        [tableName]: {
+          ...nextState,
+          rows: data.rows || [],
+          count: data.count || 0,
+          loading: false,
+          error: ""
+        }
+      }));
+    } catch (error) {
+      setDbState((prev) => ({
+        ...prev,
+        [tableName]: { ...nextState, loading: false, error: error.message }
+      }));
     }
   };
 
@@ -233,6 +334,12 @@ function App() {
     loadNumbers();
     loadEvents();
   }, [baseUrl]);
+
+  useEffect(() => {
+    if (activeView === "database") {
+      loadDbTables();
+    }
+  }, [activeView]);
 
   useEffect(() => {
     if (!selectedOwner && fromNumbers.length > 0) {
@@ -397,6 +504,70 @@ function App() {
     });
   };
 
+  const formatCellValue = (value, fieldType) => {
+    if (value === null || value === undefined || value === "") {
+      return "—";
+    }
+    if (fieldType === "datetime") {
+      return formatTimestamp(value);
+    }
+    if (fieldType === "json") {
+      try {
+        return JSON.stringify(value);
+      } catch (error) {
+        return String(value);
+      }
+    }
+    return String(value);
+  };
+
+  const getTableMeta = (name) => dbTables.find((table) => table.name === name);
+
+  const getTableState = (name) => {
+    const meta = getTableMeta(name);
+    const fallback = {
+      open: false,
+      rows: [],
+      count: 0,
+      loading: false,
+      error: "",
+      search: "",
+      sortBy: meta?.defaultSort || "createdAt",
+      sortDir: "desc",
+      filters: {}
+    };
+    return dbState[name] || fallback;
+  };
+
+  const toggleTableOpen = (name) => {
+    const tableState = getTableState(name);
+    const shouldOpen = !tableState.open;
+    setDbState((prev) => ({
+      ...prev,
+      [name]: { ...tableState, open: shouldOpen }
+    }));
+    if (shouldOpen && tableState.rows.length === 0) {
+      fetchTableRows(name, { open: true });
+    }
+  };
+
+  const updateTableSearch = (name, value) => {
+    fetchTableRows(name, { search: value });
+  };
+
+  const updateTableFilter = (name, field, value) => {
+    const tableState = getTableState(name);
+    const filters = { ...tableState.filters, [field]: value };
+    fetchTableRows(name, { filters });
+  };
+
+  const updateTableSort = (name, field) => {
+    const tableState = getTableState(name);
+    const isSameField = tableState.sortBy === field;
+    const sortDir = isSameField && tableState.sortDir === "asc" ? "desc" : "asc";
+    fetchTableRows(name, { sortBy: field, sortDir });
+  };
+
   const handleSend = async (event) => {
     event.preventDefault();
     setStatus({ loading: true, error: "", success: "" });
@@ -431,22 +602,59 @@ function App() {
     ]);
   };
 
-  return (
-    <div className="app">
-      <header className="app-header">
-        <div>
-          <p className="eyebrow">SIP Texting</p>
-          <h1>Telnyx Messaging Console</h1>
-          <p className="subtitle">
-            Manage inbound and outbound SMS across your SIP-enabled numbers.
-          </p>
-        </div>
-        <button className="ghost" onClick={handleRefresh}>
-          Refresh
-        </button>
-      </header>
+  const refreshDatabase = async () => {
+    await loadDbTables();
+    const openTables = Object.entries(dbState)
+      .filter(([, value]) => value?.open)
+      .map(([name]) => name);
+    await Promise.all(openTables.map((name) => fetchTableRows(name)));
+  };
 
-      <section className="grid">
+  return (
+    <div className="app-shell">
+      <aside className="side-nav">
+        <div className="nav-brand">
+          <span className="eyebrow">Secondary nav</span>
+          <h2>Workspace</h2>
+        </div>
+        <div className="nav-links">
+          <button
+            type="button"
+            className={`nav-link ${activeView === "console" ? "active" : ""}`}
+            onClick={() => setActiveView("console")}
+          >
+            Console
+          </button>
+          <button
+            type="button"
+            className={`nav-link ${activeView === "database" ? "active" : ""}`}
+            onClick={() => setActiveView("database")}
+          >
+            Database
+          </button>
+        </div>
+      </aside>
+
+      <main className="app">
+        <header className="app-header">
+          <div>
+            <p className="eyebrow">SIP Texting</p>
+            <h1>Telnyx Messaging Console</h1>
+            <p className="subtitle">
+              Manage inbound and outbound SMS across your SIP-enabled numbers.
+            </p>
+          </div>
+          <button
+            className="ghost"
+            onClick={activeView === "console" ? handleRefresh : refreshDatabase}
+          >
+            {activeView === "console" ? "Refresh" : "Refresh database"}
+          </button>
+        </header>
+
+        {activeView === "console" ? (
+          <>
+            <section className="grid">
         <div className="stack">
           <form className="card send-card" onSubmit={handleSend}>
             <h2>Send a message</h2>
@@ -692,7 +900,7 @@ function App() {
         </div>
       </section>
 
-      <section className="conversation-board">
+        <section className="conversation-board">
         <div className="conversation-head">
           <div>
             <p className="eyebrow">Production console</p>
@@ -828,7 +1036,194 @@ function App() {
             )}
           </div>
         </div>
-      </section>
+            </section>
+          </>
+        ) : (
+          <section className="db-view">
+            <div className="db-head">
+              <div>
+                <p className="eyebrow">Database</p>
+                <h2>Table explorer</h2>
+                <p className="subtitle">
+                  Browse, sort, search, and filter every record in your data store.
+                </p>
+              </div>
+            </div>
+
+            <div className="db-accordions">
+              {dbState.metaError ? (
+                <p className="error">{dbState.metaError}</p>
+              ) : null}
+              {dbTables.length === 0 ? (
+                <p className="muted">No tables available.</p>
+              ) : (
+                dbTables.map((table) => {
+                  const tableState = getTableState(table.name);
+                  return (
+                    <div key={table.name} className="db-accordion">
+                      <button
+                        type="button"
+                        className="db-accordion-toggle"
+                        onClick={() => toggleTableOpen(table.name)}
+                      >
+                        <div>
+                          <h3>{table.name}</h3>
+                          <p className="muted">
+                            {table.fields.length} fields
+                          </p>
+                        </div>
+                        <span className="badge">
+                          {tableState.count || 0} rows
+                        </span>
+                      </button>
+
+                      {tableState.open ? (
+                        <div className="db-accordion-body">
+                          <div className="db-table-controls">
+                            <input
+                              type="text"
+                              placeholder="Search all fields"
+                              value={tableState.search}
+                              onChange={(event) =>
+                                updateTableSearch(table.name, event.target.value)
+                              }
+                            />
+                            <button
+                              type="button"
+                              className="ghost"
+                              onClick={() => fetchTableRows(table.name)}
+                            >
+                              Refresh table
+                            </button>
+                            <button
+                              type="button"
+                              className="ghost"
+                              onClick={() => deleteSelectedRows(table.name)}
+                              disabled={
+                                Object.keys(tableState.selected || {}).length === 0
+                              }
+                            >
+                              Delete selected ({
+                                Object.keys(tableState.selected || {}).length
+                              })
+                            </button>
+                            <button
+                              type="button"
+                              className="ghost"
+                              onClick={() => clearTableRows(table.name)}
+                            >
+                              Clear table
+                            </button>
+                          </div>
+
+                          {tableState.loading ? (
+                            <p className="muted">Loading rows...</p>
+                          ) : (
+                            <div className="db-table-wrapper">
+                              <table className="db-table">
+                                <thead>
+                                  <tr>
+                                    <th className="db-check">
+                                      <input
+                                        type="checkbox"
+                                        checked={
+                                          tableState.rows.length > 0 &&
+                                          tableState.rows.every(
+                                            (row) => tableState.selected[row.id]
+                                          )
+                                        }
+                                        onChange={() =>
+                                          toggleSelectAllRows(
+                                            table.name,
+                                            tableState.rows
+                                          )
+                                        }
+                                      />
+                                    </th>
+                                    {table.fields.map((field) => (
+                                      <th key={field}>
+                                        <button
+                                          type="button"
+                                          className="db-sort"
+                                          onClick={() => updateTableSort(table.name, field)}
+                                        >
+                                          {field}
+                                          {tableState.sortBy === field ? (
+                                            <span className="db-sort-indicator">
+                                              {tableState.sortDir === "asc" ? "▲" : "▼"}
+                                            </span>
+                                          ) : null}
+                                        </button>
+                                      </th>
+                                    ))}
+                                  </tr>
+                                  <tr className="db-filter-row">
+                                    <th className="db-check" />
+                                    {table.fields.map((field) => (
+                                      <th key={`${table.name}-${field}-filter`}>
+                                        <input
+                                          type="text"
+                                          placeholder={`Filter ${field}`}
+                                          value={tableState.filters?.[field] || ""}
+                                          onChange={(event) =>
+                                            updateTableFilter(
+                                              table.name,
+                                              field,
+                                              event.target.value
+                                            )
+                                          }
+                                        />
+                                      </th>
+                                    ))}
+                                  </tr>
+                                </thead>
+                                <tbody>
+                                  {tableState.rows.length === 0 ? (
+                                    <tr>
+                                      <td colSpan={table.fields.length + 1}>
+                                        <span className="muted">No rows found.</span>
+                                      </td>
+                                    </tr>
+                                  ) : (
+                                    tableState.rows.map((row) => (
+                                      <tr key={row.id || JSON.stringify(row)}>
+                                        <td className="db-check">
+                                          <input
+                                            type="checkbox"
+                                            checked={Boolean(tableState.selected[row.id])}
+                                            onChange={() =>
+                                              toggleRowSelection(table.name, row.id)
+                                            }
+                                          />
+                                        </td>
+                                        {table.fields.map((field) => (
+                                          <td key={`${row.id || field}-${field}`}>
+                                            {formatCellValue(
+                                              row[field],
+                                              table.fieldTypes?.[field]
+                                            )}
+                                          </td>
+                                        ))}
+                                      </tr>
+                                    ))
+                                  )}
+                                </tbody>
+                              </table>
+                            </div>
+                          )}
+                          {tableState.error ? (
+                            <p className="error">{tableState.error}</p>
+                          ) : null}
+                        </div>
+                      ) : null}
+                    </div>
+                  );
+                })
+              )}
+            </div>
+          </section>
+        )}
+      </main>
     </div>
   );
 }

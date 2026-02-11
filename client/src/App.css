@@ -1,10 +1,58 @@
-.app {
-  max-width: 1200px;
+.app-shell {
+  max-width: 1400px;
   margin: 0 auto;
-  padding: 32px;
+  padding: 24px;
+  display: grid;
+  grid-template-columns: 220px 1fr;
+  gap: 24px;
+  align-items: start;
+}
+
+.app {
   display: flex;
   flex-direction: column;
   gap: 24px;
+}
+
+.side-nav {
+  position: sticky;
+  top: 24px;
+  align-self: start;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  padding: 20px;
+  border-radius: 18px;
+  border: 1px solid #1f2937;
+  background: #0f172a;
+}
+
+.nav-brand h2 {
+  margin: 6px 0 0;
+  font-size: 1.1rem;
+}
+
+.nav-links {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.nav-link {
+  text-align: left;
+  background: transparent;
+  border: 1px solid #1f2937;
+  color: #e2e8f0;
+  padding: 10px 14px;
+  border-radius: 12px;
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.nav-link.active {
+  border-color: rgba(56, 189, 248, 0.6);
+  box-shadow: 0 0 0 1px rgba(56, 189, 248, 0.3);
+  color: #7dd3fc;
 }
 
 .app-header {
@@ -346,6 +394,132 @@ button:disabled {
   margin: 0;
 }
 
+.db-view {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.db-head h2 {
+  margin: 6px 0 0;
+  font-size: 1.6rem;
+}
+
+.db-accordions {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.db-accordion {
+  border-radius: 16px;
+  border: 1px solid #1f2937;
+  background: #0b1220;
+  overflow: hidden;
+}
+
+.db-accordion-toggle {
+  width: 100%;
+  background: transparent;
+  border: none;
+  padding: 16px 20px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  color: inherit;
+  cursor: pointer;
+}
+
+.db-accordion-toggle h3 {
+  margin: 0;
+  font-size: 1.1rem;
+}
+
+.db-accordion-body {
+  border-top: 1px solid #1f2937;
+  padding: 16px 20px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.db-table-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+}
+
+.db-table-controls input {
+  min-width: 240px;
+}
+
+.db-table-wrapper {
+  overflow: auto;
+  border-radius: 12px;
+  border: 1px solid #1f2937;
+  background: #0f172a;
+}
+
+.db-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.85rem;
+  color: #e2e8f0;
+}
+
+.db-table th,
+.db-table td {
+  border-bottom: 1px solid #1f2937;
+  padding: 10px 12px;
+  text-align: left;
+  vertical-align: top;
+}
+
+.db-check {
+  width: 36px;
+  text-align: center;
+}
+
+.db-table th {
+  background: #0b1220;
+  position: sticky;
+  top: 0;
+  z-index: 1;
+}
+
+.db-filter-row th {
+  background: #0f172a;
+  position: sticky;
+  top: 40px;
+  z-index: 1;
+}
+
+.db-filter-row input {
+  width: 100%;
+  padding: 8px 10px;
+  font-size: 0.8rem;
+  border-radius: 8px;
+}
+
+.db-sort {
+  background: transparent;
+  border: none;
+  color: inherit;
+  padding: 0;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 600;
+}
+
+.db-sort-indicator {
+  font-size: 0.7rem;
+  color: #7dd3fc;
+}
+
 .conversation-board {
   border: 1px solid #1e293b;
   border-radius: 20px;
@@ -517,6 +691,23 @@ button:disabled {
   justify-content: center;
   flex: 1;
   min-height: 200px;
+}
+
+@media (max-width: 1100px) {
+  .app-shell {
+    grid-template-columns: 1fr;
+  }
+
+  .side-nav {
+    position: static;
+    flex-direction: row;
+    align-items: center;
+    justify-content: space-between;
+  }
+
+  .nav-links {
+    flex-direction: row;
+  }
 }
 
 .chat-row {
