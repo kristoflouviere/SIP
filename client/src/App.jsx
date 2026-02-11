@@ -373,13 +373,6 @@ function App() {
     markConversationRead(selectedOwner, selectedConversation);
   }, [selectedOwner, selectedConversation]);
 
-  useEffect(() => {
-    if (!threadBodyRef.current) {
-      return;
-    }
-    threadBodyRef.current.scrollTop = threadBodyRef.current.scrollHeight;
-  }, [sortedConversationMessages, selectedConversation]);
-
   const handleChange = (event) => {
     const { name, value } = event.target;
     if (name === "from" || name === "to") {
@@ -470,6 +463,13 @@ function App() {
     });
   }, [conversationMessages]);
 
+  useEffect(() => {
+    if (!threadBodyRef.current) {
+      return;
+    }
+    threadBodyRef.current.scrollTop = threadBodyRef.current.scrollHeight;
+  }, [sortedConversationMessages, selectedConversation]);
+
   const activityRows = useMemo(() => {
     if (events.length === 0) {
       return [];
@@ -550,7 +550,8 @@ function App() {
       search: "",
       sortBy: meta?.defaultSort || "createdAt",
       sortDir: "desc",
-      filters: {}
+      filters: {},
+      selected: {}
     };
     return dbState[name] || fallback;
   };
@@ -582,6 +583,81 @@ function App() {
     const isSameField = tableState.sortBy === field;
     const sortDir = isSameField && tableState.sortDir === "asc" ? "desc" : "asc";
     fetchTableRows(name, { sortBy: field, sortDir });
+  };
+
+  const toggleRowSelection = (name, rowId) => {
+    const tableState = getTableState(name);
+    const nextSelected = { ...tableState.selected };
+    if (nextSelected[rowId]) {
+      delete nextSelected[rowId];
+    } else {
+      nextSelected[rowId] = true;
+    }
+    setDbState((prev) => ({
+      ...prev,
+      [name]: { ...tableState, selected: nextSelected }
+    }));
+  };
+
+  const toggleSelectAllRows = (name, rows) => {
+    const tableState = getTableState(name);
+    const allSelected = rows.length > 0 && rows.every((row) => tableState.selected[row.id]);
+    const nextSelected = {};
+    if (!allSelected) {
+      rows.forEach((row) => {
+        nextSelected[row.id] = true;
+      });
+    }
+    setDbState((prev) => ({
+      ...prev,
+      [name]: { ...tableState, selected: nextSelected }
+    }));
+  };
+
+  const deleteSelectedRows = async (name) => {
+    const tableState = getTableState(name);
+    const selectedIds = Object.keys(tableState.selected || {});
+    if (selectedIds.length === 0) {
+      return;
+    }
+    const confirmed = window.confirm(
+      `Delete ${selectedIds.length} record(s) from ${name}?`
+    );
+    if (!confirmed) {
+      return;
+    }
+    try {
+      await fetch(`${baseUrl}/db/table/${encodeURIComponent(name)}/delete`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ids: selectedIds })
+      });
+      await fetchTableRows(name);
+    } catch (error) {
+      setDbState((prev) => ({
+        ...prev,
+        [name]: { ...tableState, error: error.message }
+      }));
+    }
+  };
+
+  const clearTableRows = async (name) => {
+    const tableState = getTableState(name);
+    const confirmed = window.confirm(`Clear all records from ${name}?`);
+    if (!confirmed) {
+      return;
+    }
+    try {
+      await fetch(`${baseUrl}/db/table/${encodeURIComponent(name)}/clear`, {
+        method: "POST"
+      });
+      await fetchTableRows(name);
+    } catch (error) {
+      setDbState((prev) => ({
+        ...prev,
+        [name]: { ...tableState, error: error.message }
+      }));
+    }
   };
 
   const handleSend = async (event) => {
