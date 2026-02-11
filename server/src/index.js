@@ -16,6 +16,77 @@ const SYNC_ON_STARTUP =
   (process.env.SYNC_ON_STARTUP || defaultSyncOnStartup).toLowerCase() === "true";
 const SYNC_LOOKBACK_DAYS = Number(process.env.SYNC_LOOKBACK_DAYS || 30);
 
+const getMessageTime = (message) => {
+  if (message?.occurredAt) {
+    return new Date(message.occurredAt);
+  }
+  if (message?.createdAt) {
+    return new Date(message.createdAt);
+  }
+  return new Date();
+};
+
+const updateConversationForMessage = async ({ message, countUnread }) => {
+  if (!message) {
+    return;
+  }
+
+  const ownerNumber = message.direction === "inbound" ? message.to : message.from;
+  const counterparty = message.direction === "inbound" ? message.from : message.to;
+
+  if (!ownerNumber || !counterparty) {
+    return;
+  }
+
+  const messageTime = getMessageTime(message);
+  const previewText = message.text || "(no text)";
+  const lastData = {
+    lastMessageAt: messageTime,
+    lastMessageText: previewText,
+    lastMessageDirection: message.direction || "unknown",
+    lastMessageId: message.id
+  };
+
+  const existing = await prisma.conversation.findUnique({
+    where: {
+      owner_counterparty: {
+        ownerNumber,
+        counterparty
+      }
+    }
+  });
+
+  const shouldUpdateLast =
+    !existing?.lastMessageAt || messageTime >= new Date(existing.lastMessageAt);
+
+  let unreadCount = existing?.unreadCount ?? 0;
+  if (countUnread && message.direction === "inbound") {
+    const lastReadAt = existing?.lastReadAt ? new Date(existing.lastReadAt) : null;
+    if (!lastReadAt || messageTime > lastReadAt) {
+      unreadCount += 1;
+    }
+  }
+
+  await prisma.conversation.upsert({
+    where: {
+      owner_counterparty: {
+        ownerNumber,
+        counterparty
+      }
+    },
+    update: {
+      ...(shouldUpdateLast ? lastData : {}),
+      unreadCount
+    },
+    create: {
+      ownerNumber,
+      counterparty,
+      ...lastData,
+      unreadCount: countUnread && message.direction === "inbound" ? 1 : 0
+    }
+  });
+};
+
 app.use(cors());
 app.use(express.json({ limit: "2mb" }));
 
@@ -45,6 +116,75 @@ app.get("/numbers/to", async (_req, res) => {
     orderBy: { lastUsedAt: "desc" }
   });
   res.json({ numbers });
+});
+
+app.get("/conversations", async (req, res) => {
+  const owner = req.query.owner;
+  if (!owner) {
+    return res.status(400).json({ error: "owner is required" });
+  }
+
+  const conversations = await prisma.conversation.findMany({
+    where: { ownerNumber: owner },
+    orderBy: { lastMessageAt: "desc" }
+  });
+
+  res.json({ conversations });
+});
+
+app.get("/conversations/history", async (req, res) => {
+  const owner = req.query.owner;
+  const counterparty = req.query.counterparty;
+  if (!owner || !counterparty) {
+    return res.status(400).json({ error: "owner and counterparty are required" });
+  }
+
+  const messages = await prisma.message.findMany({
+    where: {
+      OR: [
+        { from: owner, to: counterparty },
+        { from: counterparty, to: owner }
+      ]
+    },
+    orderBy: { createdAt: "asc" }
+  });
+
+  res.json({ messages });
+});
+
+app.post("/conversations/mark-read", async (req, res) => {
+  const { owner, counterparty } = req.body || {};
+  if (!owner || !counterparty) {
+    return res.status(400).json({ error: "owner and counterparty are required" });
+  }
+
+  const existing = await prisma.conversation.findUnique({
+    where: {
+      owner_counterparty: {
+        ownerNumber: owner,
+        counterparty
+      }
+    }
+  });
+
+  if (!existing) {
+    return res.json({ ok: true, conversation: null });
+  }
+
+  const updated = await prisma.conversation.update({
+    where: {
+      owner_counterparty: {
+        ownerNumber: owner,
+        counterparty
+      }
+    },
+    data: {
+      unreadCount: 0,
+      lastReadAt: new Date()
+    }
+  });
+
+  res.json({ ok: true, conversation: updated });
 });
 
 const syncInboundMessages = async ({ since }) => {
@@ -88,8 +228,9 @@ const syncInboundMessages = async ({ since }) => {
           where: { telnyxMessageId }
         });
 
+        let savedMessage = null;
         if (existing) {
-          await prisma.message.update({
+          savedMessage = await prisma.message.update({
             where: { id: existing.id },
             data: {
               status: item.to?.[0]?.status || item.status || null,
@@ -98,7 +239,7 @@ const syncInboundMessages = async ({ since }) => {
             }
           });
         } else {
-          await prisma.message.create({
+          savedMessage = await prisma.message.create({
             data: {
               direction: item.direction || "inbound",
               from: item.from?.phone_number || item.from || "",
@@ -111,6 +252,7 @@ const syncInboundMessages = async ({ since }) => {
             }
           });
         }
+        await updateConversationForMessage({ message: savedMessage, countUnread: false });
         synced += 1;
       } catch (error) {
         skipped += 1;
@@ -178,6 +320,8 @@ app.post("/messages/send", async (req, res) => {
       }
     });
 
+    await updateConversationForMessage({ message: saved, countUnread: false });
+
     await Promise.all([
       prisma.fromNumber.upsert({
         where: { number: from },
@@ -219,7 +363,7 @@ app.post("/webhooks/telnyx", async (req, res) => {
   }
 
   try {
-    await prisma.message.create({
+    const savedMessage = await prisma.message.create({
       data: {
         direction,
         from,
@@ -232,6 +376,7 @@ app.post("/webhooks/telnyx", async (req, res) => {
         raw: event
       }
     });
+    await updateConversationForMessage({ message: savedMessage, countUnread: true });
   } catch (error) {
     console.error("Failed to store webhook message", error);
   }

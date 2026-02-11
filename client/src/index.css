@@ -1,5 +1,7 @@
+@import url("https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&display=swap");
+
 :root {
-  font-family: "Inter", system-ui, sans-serif;
+  font-family: "Space Grotesk", "Trebuchet MS", sans-serif;
   line-height: 1.5;
   font-weight: 400;
   color: #e2e8f0;

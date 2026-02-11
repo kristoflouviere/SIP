@@ -104,6 +104,14 @@ function App() {
   const [toNumbers, setToNumbers] = useState([]);
   const [form, setForm] = useState({ from: "", to: "", text: "" });
   const [status, setStatus] = useState({ loading: false, error: "", success: "" });
+  const [selectedOwner, setSelectedOwner] = useState("");
+  const [conversations, setConversations] = useState([]);
+  const [selectedConversation, setSelectedConversation] = useState("");
+  const [conversationMessages, setConversationMessages] = useState([]);
+  const [conversationStatus, setConversationStatus] = useState({
+    loading: false,
+    error: ""
+  });
 
   const loadMessages = async () => {
     setStatus((prev) => ({ ...prev, error: "" }));
@@ -131,10 +139,91 @@ function App() {
     }
   };
 
+  const loadConversations = async (ownerNumber) => {
+    if (!ownerNumber) {
+      setConversations([]);
+      return;
+    }
+    setConversationStatus((prev) => ({ ...prev, loading: true, error: "" }));
+    try {
+      const response = await fetch(
+        `${baseUrl}/conversations?owner=${encodeURIComponent(ownerNumber)}`
+      );
+      const data = await response.json();
+      setConversations(data.conversations || []);
+      setConversationStatus((prev) => ({ ...prev, loading: false }));
+    } catch (error) {
+      setConversationStatus({ loading: false, error: error.message });
+    }
+  };
+
+  const loadConversationMessages = async (ownerNumber, counterparty) => {
+    if (!ownerNumber || !counterparty) {
+      setConversationMessages([]);
+      return;
+    }
+    try {
+      const response = await fetch(
+        `${baseUrl}/conversations/history?owner=${encodeURIComponent(
+          ownerNumber
+        )}&counterparty=${encodeURIComponent(counterparty)}`
+      );
+      const data = await response.json();
+      setConversationMessages(data.messages || []);
+    } catch (error) {
+      setConversationStatus({ loading: false, error: error.message });
+    }
+  };
+
+  const markConversationRead = async (ownerNumber, counterparty) => {
+    if (!ownerNumber || !counterparty) {
+      return;
+    }
+    try {
+      await fetch(`${baseUrl}/conversations/mark-read`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ owner: ownerNumber, counterparty })
+      });
+      setConversations((prev) =>
+        prev.map((item) =>
+          item.counterparty === counterparty
+            ? { ...item, unreadCount: 0 }
+            : item
+        )
+      );
+    } catch (error) {
+      setConversationStatus({ loading: false, error: error.message });
+    }
+  };
+
   useEffect(() => {
     loadMessages();
     loadNumbers();
   }, [baseUrl]);
+
+  useEffect(() => {
+    if (!selectedOwner && fromNumbers.length > 0) {
+      setSelectedOwner(fromNumbers[0].number);
+    }
+  }, [fromNumbers, selectedOwner]);
+
+  useEffect(() => {
+    if (!selectedOwner) {
+      setConversations([]);
+      return;
+    }
+    loadConversations(selectedOwner);
+  }, [selectedOwner]);
+
+  useEffect(() => {
+    if (!selectedOwner || !selectedConversation) {
+      setConversationMessages([]);
+      return;
+    }
+    loadConversationMessages(selectedOwner, selectedConversation);
+    markConversationRead(selectedOwner, selectedConversation);
+  }, [selectedOwner, selectedConversation]);
 
   const handleChange = (event) => {
     const { name, value } = event.target;
@@ -188,6 +277,30 @@ function App() {
       }))
     }));
   }, [messages]);
+
+  const sortedConversationMessages = useMemo(() => {
+    return [...conversationMessages].sort((a, b) => {
+      const firstTime = new Date(a.occurredAt || a.createdAt || 0).getTime();
+      const secondTime = new Date(b.occurredAt || b.createdAt || 0).getTime();
+      return firstTime - secondTime;
+    });
+  }, [conversationMessages]);
+
+  const formatTimestamp = (value) => {
+    if (!value) {
+      return "";
+    }
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) {
+      return "";
+    }
+    return date.toLocaleString([], {
+      month: "short",
+      day: "numeric",
+      hour: "2-digit",
+      minute: "2-digit"
+    });
+  };
 
   const handleSend = async (event) => {
     event.preventDefault();
@@ -441,6 +554,137 @@ function App() {
                 </div>
               </div>
             </div>
+          </div>
+        </div>
+      </section>
+
+      <section className="conversation-board">
+        <div className="conversation-head">
+          <div>
+            <p className="eyebrow">Production console</p>
+            <h2>Conversation overview</h2>
+          </div>
+          <div className="conversation-actions">
+            <span className="badge">
+              {selectedOwner ? selectedOwner : "No owned number"}
+            </span>
+            <button className="ghost" onClick={() => loadConversations(selectedOwner)}>
+              Refresh conversations
+            </button>
+          </div>
+        </div>
+
+        <div className="owner-row">
+          {fromNumbers.length === 0 ? (
+            <p className="muted">No owned numbers yet.</p>
+          ) : (
+            fromNumbers.map((item) => (
+              <button
+                key={item.id}
+                type="button"
+                className={`owner-chip ${
+                  selectedOwner === item.number ? "active" : ""
+                }`}
+                onClick={() => {
+                  setSelectedOwner(item.number);
+                  setSelectedConversation("");
+                }}
+              >
+                {item.number}
+              </button>
+            ))
+          )}
+        </div>
+
+        <div className="conversation-panel">
+          <div className="conversation-list">
+            <div className="list-header">
+              <h3>Recent conversations</h3>
+              <span className="badge">{conversations.length} threads</span>
+            </div>
+            {conversationStatus.loading ? (
+              <p className="muted">Loading conversations...</p>
+            ) : conversations.length === 0 ? (
+              <p className="muted">No conversations yet.</p>
+            ) : (
+              conversations.map((item) => {
+                const isActive = selectedConversation === item.counterparty;
+                const isUnread = item.unreadCount > 0;
+                return (
+                  <button
+                    key={`${item.ownerNumber}-${item.counterparty}`}
+                    type="button"
+                    className={`conversation-item ${
+                      isActive ? "active" : ""
+                    } ${isUnread ? "unread" : ""}`}
+                    onClick={() => setSelectedConversation(item.counterparty)}
+                  >
+                    <div className="conversation-title">
+                      <span>{item.counterparty}</span>
+                      <span className="conversation-time">
+                        {formatTimestamp(item.lastMessageAt)}
+                      </span>
+                    </div>
+                    <div className="conversation-preview">
+                      <span>{item.lastMessageText || "(no text)"}</span>
+                      {isUnread ? <span className="unread-dot" /> : null}
+                    </div>
+                  </button>
+                );
+              })
+            )}
+            {conversationStatus.error ? (
+              <p className="error">{conversationStatus.error}</p>
+            ) : null}
+          </div>
+
+          <div className="conversation-thread">
+            {selectedConversation ? (
+              <>
+                <div className="thread-header">
+                  <div>
+                    <p className="eyebrow">Conversation</p>
+                    <h3>{selectedConversation}</h3>
+                  </div>
+                  <span className="badge">
+                    {sortedConversationMessages.length} messages
+                  </span>
+                </div>
+                <div className="thread-body">
+                  {sortedConversationMessages.length === 0 ? (
+                    <p className="muted">No messages in this conversation yet.</p>
+                  ) : (
+                    sortedConversationMessages.map((message) => {
+                      const directionClass =
+                        message.direction === "inbound" ? "inbound" : "outbound";
+                      return (
+                        <div
+                          key={message.id}
+                          className={`chat-row ${directionClass}`}
+                        >
+                          <div className={`chat-bubble ${directionClass}`}>
+                            <p className="chat-text">
+                              {message.text || "(no text)"}
+                            </p>
+                            <p className="chat-meta">
+                              {formatTimestamp(
+                                message.occurredAt || message.createdAt
+                              )}
+                            </p>
+                          </div>
+                        </div>
+                      );
+                    })
+                  )}
+                </div>
+              </>
+            ) : (
+              <div className="thread-empty">
+                <p className="muted">
+                  Select a conversation to view the full message history.
+                </p>
+              </div>
+            )}
           </div>
         </div>
       </section>

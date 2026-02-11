@@ -34,3 +34,19 @@ model ToNumber {
   firstUsedAt DateTime @default(now())
   lastUsedAt  DateTime @default(now())
 }
+
+model Conversation {
+  id                   String   @id @default(uuid())
+  ownerNumber          String
+  counterparty         String
+  lastMessageAt        DateTime
+  lastMessageText      String
+  lastMessageDirection String
+  lastMessageId        String
+  unreadCount          Int      @default(0)
+  lastReadAt           DateTime?
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  @@unique([ownerNumber, counterparty], name: "owner_counterparty")
+}
