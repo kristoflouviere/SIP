@@ -562,8 +562,8 @@ app.get("/conversations/history", async (req, res) => {
   const messages = await prisma.message.findMany({
     where: {
       OR: [
-        { from: owner, to: counterparty },
-        { from: counterparty, to: owner }
+        { direction: "outbound", from: owner, to: counterparty },
+        { direction: "inbound", from: counterparty, to: owner }
       ]
     },
     orderBy: { createdAt: "asc" }
