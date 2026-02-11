@@ -19,6 +19,8 @@ model Message {
   occurredAt      DateTime?
   createdAt       DateTime @default(now())
   raw             Json?
+
+  events          MessageEvent[]
 }
 
 model FromNumber {
@@ -33,6 +35,23 @@ model ToNumber {
   number     String   @unique
   firstUsedAt DateTime @default(now())
   lastUsedAt  DateTime @default(now())
+}
+
+model MessageEvent {
+  id              String   @id @default(uuid())
+  telnyxEventId   String?  @unique
+  telnyxMessageId String?
+  eventType       String
+  status          String?
+  occurredAt      DateTime
+  payload         Json?
+  messageId       String?
+  createdAt       DateTime @default(now())
+
+  message         Message? @relation(fields: [messageId], references: [id])
+
+  @@index([telnyxMessageId])
+  @@index([occurredAt])
 }
 
 model Conversation {

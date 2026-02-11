@@ -87,6 +87,49 @@ const updateConversationForMessage = async ({ message, countUnread }) => {
   });
 };
 
+const resolveEventStatus = (payload) =>
+  payload?.to?.[0]?.status || payload?.status || null;
+
+const resolveEventOccurredAt = (event, payload) => {
+  const candidate =
+    payload?.received_at || payload?.created_at || event?.created_at || null;
+  if (!candidate) {
+    return new Date();
+  }
+  const date = new Date(candidate);
+  return Number.isNaN(date.getTime()) ? new Date() : date;
+};
+
+const upsertMessageEvent = async ({
+  telnyxEventId,
+  telnyxMessageId,
+  eventType,
+  status,
+  occurredAt,
+  payload,
+  messageId
+}) => {
+  const data = {
+    telnyxEventId,
+    telnyxMessageId,
+    eventType,
+    status,
+    occurredAt,
+    payload,
+    messageId
+  };
+
+  if (telnyxEventId) {
+    return prisma.messageEvent.upsert({
+      where: { telnyxEventId },
+      update: data,
+      create: data
+    });
+  }
+
+  return prisma.messageEvent.create({ data });
+};
+
 const rebuildConversations = async ({ owner }) => {
   const where = owner
     ? {
@@ -156,6 +199,27 @@ app.get("/messages", async (req, res) => {
   });
 
   res.json({ messages });
+});
+
+app.get("/events", async (req, res) => {
+  const limit = Number(req.query.limit || 120);
+  const events = await prisma.messageEvent.findMany({
+    orderBy: { occurredAt: "desc" },
+    take: Math.min(limit, 300),
+    include: {
+      message: {
+        select: {
+          id: true,
+          direction: true,
+          from: true,
+          to: true,
+          text: true
+        }
+      }
+    }
+  });
+
+  res.json({ events });
 });
 
 app.get("/numbers/from", async (_req, res) => {
@@ -385,6 +449,18 @@ app.post("/messages/send", async (req, res) => {
       }
     });
 
+    await upsertMessageEvent({
+      telnyxEventId: null,
+      telnyxMessageId: messageData?.id || null,
+      eventType: "message.sent",
+      status: messageData?.to?.[0]?.status || messageData?.status || null,
+      occurredAt: messageData?.created_at
+        ? new Date(messageData.created_at)
+        : new Date(),
+      payload: response.data,
+      messageId: saved.id
+    });
+
     await updateConversationForMessage({ message: saved, countUnread: false });
 
     await Promise.all([
@@ -418,6 +494,31 @@ app.post("/webhooks/telnyx", async (req, res) => {
   const eventData = event.data || {};
   const payload = eventData.payload || {};
 
+  const eventType = event.type || "message.unknown";
+  const telnyxEventId = event.id || null;
+  const telnyxMessageId = payload.id || payload.message_id || null;
+  const status = resolveEventStatus(payload);
+  const occurredAt = resolveEventOccurredAt(event, payload);
+  const messageRef = telnyxMessageId
+    ? await prisma.message.findFirst({
+        where: { telnyxMessageId }
+      })
+    : null;
+
+  try {
+    await upsertMessageEvent({
+      telnyxEventId,
+      telnyxMessageId,
+      eventType,
+      status,
+      occurredAt,
+      payload: event,
+      messageId: messageRef?.id || null
+    });
+  } catch (error) {
+    console.error("Failed to store event log", error);
+  }
+
   const direction = payload.direction || "inbound";
   const from = payload.from?.phone_number || payload.from || null;
   const to = payload.to?.[0]?.phone_number || payload.to || null;
@@ -428,19 +529,36 @@ app.post("/webhooks/telnyx", async (req, res) => {
   }
 
   try {
-    const savedMessage = await prisma.message.create({
-      data: {
-        direction,
-        from,
-        to,
-        text,
-        status: payload.to?.[0]?.status || payload.status || null,
-        telnyxMessageId: payload.id || null,
-        telnyxEventId: event?.id || null,
-        occurredAt: payload.received_at ? new Date(payload.received_at) : null,
-        raw: event
-      }
-    });
+    const telnyxMessageIdForSave = payload.id || null;
+    const existing = telnyxMessageIdForSave
+      ? await prisma.message.findFirst({
+          where: { telnyxMessageId: telnyxMessageIdForSave }
+        })
+      : null;
+
+    const savedMessage = existing
+      ? await prisma.message.update({
+          where: { id: existing.id },
+          data: {
+            status,
+            occurredAt: payload.received_at ? new Date(payload.received_at) : null,
+            raw: event
+          }
+        })
+      : await prisma.message.create({
+          data: {
+            direction,
+            from,
+            to,
+            text,
+            status,
+            telnyxMessageId: telnyxMessageIdForSave,
+            telnyxEventId: event?.id || null,
+            occurredAt: payload.received_at ? new Date(payload.received_at) : null,
+            raw: event
+          }
+        });
+
     await updateConversationForMessage({ message: savedMessage, countUnread: true });
   } catch (error) {
     console.error("Failed to store webhook message", error);

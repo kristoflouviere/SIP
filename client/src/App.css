@@ -319,6 +319,11 @@ button:disabled {
   white-space: nowrap;
 }
 
+.status.status-changed {
+  color: #f87171;
+  background: rgba(248, 113, 113, 0.12);
+}
+
 .badge {
   font-size: 0.75rem;
   color: #f8fafc;

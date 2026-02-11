@@ -100,10 +100,12 @@ function App() {
     []
   );
   const [messages, setMessages] = useState([]);
+  const [events, setEvents] = useState([]);
   const [fromNumbers, setFromNumbers] = useState([]);
   const [toNumbers, setToNumbers] = useState([]);
   const [form, setForm] = useState({ from: "", to: "", text: "" });
   const [status, setStatus] = useState({ loading: false, error: "", success: "" });
+  const [eventStatus, setEventStatus] = useState({ loading: false, error: "" });
   const [selectedOwner, setSelectedOwner] = useState("");
   const [conversations, setConversations] = useState([]);
   const [selectedConversation, setSelectedConversation] = useState("");
@@ -121,6 +123,18 @@ function App() {
       setMessages(data.messages || []);
     } catch (error) {
       setStatus((prev) => ({ ...prev, error: error.message }));
+    }
+  };
+
+  const loadEvents = async () => {
+    setEventStatus((prev) => ({ ...prev, loading: true, error: "" }));
+    try {
+      const response = await fetch(`${baseUrl}/events`);
+      const data = await response.json();
+      setEvents(data.events || []);
+      setEventStatus((prev) => ({ ...prev, loading: false }));
+    } catch (error) {
+      setEventStatus({ loading: false, error: error.message });
     }
   };
 
@@ -217,6 +231,7 @@ function App() {
   useEffect(() => {
     loadMessages();
     loadNumbers();
+    loadEvents();
   }, [baseUrl]);
 
   useEffect(() => {
@@ -304,12 +319,67 @@ function App() {
   }, [messages]);
 
   const sortedConversationMessages = useMemo(() => {
-    return [...conversationMessages].sort((a, b) => {
+    const seen = new Set();
+    const deduped = [];
+
+    for (const message of conversationMessages) {
+      const timestamp = new Date(
+        message.occurredAt || message.createdAt || 0
+      ).getTime();
+      const key = message.telnyxMessageId
+        ? `telnyx:${message.telnyxMessageId}`
+        : `fallback:${message.direction}|${message.from}|${message.to}|${
+            message.text || ""
+          }|${timestamp}`;
+
+      if (seen.has(key)) {
+        continue;
+      }
+
+      seen.add(key);
+      deduped.push(message);
+    }
+
+    return deduped.sort((a, b) => {
       const firstTime = new Date(a.occurredAt || a.createdAt || 0).getTime();
       const secondTime = new Date(b.occurredAt || b.createdAt || 0).getTime();
       return firstTime - secondTime;
     });
   }, [conversationMessages]);
+
+  const activityRows = useMemo(() => {
+    if (events.length === 0) {
+      return [];
+    }
+
+    const chronological = [...events].sort((a, b) => {
+      const firstTime = new Date(a.occurredAt || a.createdAt || 0).getTime();
+      const secondTime = new Date(b.occurredAt || b.createdAt || 0).getTime();
+      return firstTime - secondTime;
+    });
+
+    const lastStatusByMessage = new Map();
+    const statusChangeByEvent = new Map();
+
+    for (const event of chronological) {
+      const key = event.telnyxMessageId || event.message?.id || event.id;
+      const previousStatus = lastStatusByMessage.get(key);
+      const currentStatus = event.status || null;
+
+      if (currentStatus && previousStatus && currentStatus !== previousStatus) {
+        statusChangeByEvent.set(event.id, true);
+      }
+
+      if (currentStatus) {
+        lastStatusByMessage.set(key, currentStatus);
+      }
+    }
+
+    return events.map((event) => ({
+      ...event,
+      statusChanged: statusChangeByEvent.get(event.id) || false
+    }));
+  }, [events]);
 
   const formatTimestamp = (value) => {
     if (!value) {
@@ -352,6 +422,15 @@ function App() {
     }
   };
 
+  const handleRefresh = async () => {
+    await Promise.all([
+      loadMessages(),
+      loadNumbers(),
+      loadEvents(),
+      selectedOwner ? loadConversations(selectedOwner) : Promise.resolve()
+    ]);
+  };
+
   return (
     <div className="app">
       <header className="app-header">
@@ -362,7 +441,7 @@ function App() {
             Manage inbound and outbound SMS across your SIP-enabled numbers.
           </p>
         </div>
-        <button className="ghost" onClick={loadMessages}>
+        <button className="ghost" onClick={handleRefresh}>
           Refresh
         </button>
       </header>
@@ -535,25 +614,42 @@ function App() {
           <div className="card">
             <div className="card-header">
               <h2>Recent activity</h2>
-              <span className="badge">{messages.length} messages</span>
+              <span className="badge">{events.length} entries</span>
             </div>
             <div className="message-list">
-              {messages.length === 0 ? (
-                <p className="muted">No messages yet.</p>
-              ) : (
-                messages.map((message) => (
-                  <div key={message.id} className="message">
-                    <div>
-                      <p className="message-text">{message.text || "(no text)"}</p>
-                      <p className="message-meta">
-                        {message.direction} • {message.from} → {message.to}
-                      </p>
-                    </div>
-                    <span className="status">{message.status || "received"}</span>
-                  </div>
-                ))
-              )}
+              {eventStatus.loading ? (
+                <p className="muted">Loading activity...</p>
+              ) : events.length === 0 ? (
+                <p className="muted">No activity yet.</p>
+                  ) : (
+                    activityRows.map((event) => (
+                      <div key={event.id} className="message">
+                        <div>
+                          <p className="message-text">
+                            {event.message?.text || "(no text)"}
+                          </p>
+                          <p className="message-meta">
+                            {event.eventType}
+                            {event.message
+                              ? ` • ${event.message.from} → ${event.message.to}`
+                              : ""}
+                          </p>
+                          <p className="message-meta">
+                            {formatTimestamp(event.occurredAt || event.createdAt)}
+                          </p>
+                        </div>
+                        <span
+                          className={`status ${
+                            event.statusChanged ? "status-changed" : ""
+                          }`}
+                        >
+                          {event.status || "received"}
+                        </span>
+                      </div>
+                    ))
+                  )}
             </div>
+              {eventStatus.error ? <p className="error">{eventStatus.error}</p> : null}
           </div>
           <div className="card">
             <div className="card-header">
