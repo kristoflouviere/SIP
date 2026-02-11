@@ -360,8 +360,20 @@ const rebuildConversations = async ({ owner }) => {
 
   const map = new Map();
   for (const message of messages) {
-    const ownerNumber = message.direction === "inbound" ? message.to : message.from;
-    const counterparty = message.direction === "inbound" ? message.from : message.to;
+    let ownerNumber = message.direction === "inbound" ? message.to : message.from;
+    let counterparty = message.direction === "inbound" ? message.from : message.to;
+
+    if (owner) {
+      if (message.from === owner) {
+        ownerNumber = owner;
+        counterparty = message.to;
+      } else if (message.to === owner) {
+        ownerNumber = owner;
+        counterparty = message.from;
+      } else {
+        continue;
+      }
+    }
 
     if (!ownerNumber || !counterparty) {
       continue;
@@ -380,7 +392,7 @@ const rebuildConversations = async ({ owner }) => {
       });
     }
 
-    if (message.direction === "inbound") {
+    if (owner ? message.to === owner : message.direction === "inbound") {
       const entry = map.get(key);
       entry.unreadCount += 1;
     }

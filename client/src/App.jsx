@@ -1047,13 +1047,11 @@ function App() {
             </div>
           </div>
         </div>
-      </section>
-
           </section>
         </section>
       ) : (
         <section className="db-view">
-            <div className="db-head">
+          <div className="db-head">
               <div>
                 <p className="eyebrow">Database</p>
                 <h2>Table explorer</h2>
