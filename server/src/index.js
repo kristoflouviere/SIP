@@ -267,7 +267,29 @@ app.get("/conversations/history", async (req, res) => {
     orderBy: { createdAt: "asc" }
   });
 
-  res.json({ messages });
+  const dedupedMap = new Map();
+  for (const message of messages) {
+    const timestamp = getMessageTime(message);
+    const roundedSeconds = Math.floor(timestamp.getTime() / 1000);
+    const key = message.telnyxMessageId
+      ? `telnyx:${message.telnyxMessageId}`
+      : `fallback:${message.direction}|${message.from}|${message.to}|${
+          message.text || ""
+        }|${roundedSeconds}`;
+
+    const existing = dedupedMap.get(key);
+    if (!existing || timestamp > getMessageTime(existing)) {
+      dedupedMap.set(key, message);
+    }
+  }
+
+  const dedupedMessages = Array.from(dedupedMap.values()).sort((a, b) => {
+    const firstTime = getMessageTime(a).getTime();
+    const secondTime = getMessageTime(b).getTime();
+    return firstTime - secondTime;
+  });
+
+  res.json({ messages: dedupedMessages });
 });
 
 app.post("/conversations/mark-read", async (req, res) => {
