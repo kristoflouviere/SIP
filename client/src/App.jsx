@@ -250,6 +250,14 @@ function App() {
     setForm((prev) => ({ ...prev, [name]: value }));
   };
 
+  const handleSwap = () => {
+    setForm((prev) => ({
+      ...prev,
+      from: prev.to,
+      to: prev.from
+    }));
+  };
+
   const fromMeta = useMemo(() => analyzeNumber(form.from), [form.from]);
   const toMeta = useMemo(() => analyzeNumber(form.to), [form.to]);
   const inboundGroups = useMemo(() => {
@@ -393,6 +401,12 @@ function App() {
                 {getLengthMessage(fromMeta)}
               </p>
             </label>
+            <div className="swap-row">
+              <button type="button" className="swap-button" onClick={handleSwap}>
+                <span className="swap-icon">&updownarrow;</span>
+                Swap
+              </button>
+            </div>
             <label>
               To
               <select

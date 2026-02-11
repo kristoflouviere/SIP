@@ -52,6 +52,35 @@ h1 {
   min-height: 88px;
 }
 
+.swap-row {
+  display: flex;
+  justify-content: center;
+}
+
+.swap-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 14px;
+  border-radius: 999px;
+  border: 1px solid #1f2937;
+  background: #0b1220;
+  color: #e2e8f0;
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.swap-button:hover {
+  border-color: rgba(56, 189, 248, 0.5);
+  box-shadow: 0 0 0 2px rgba(56, 189, 248, 0.15);
+}
+
+.swap-icon {
+  font-size: 0.95rem;
+  line-height: 1;
+}
+
 .card {
   background: #0f172a;
   border: 1px solid #1e293b;
