@@ -406,7 +406,7 @@ const rebuildConversations = async ({ owner }) => {
 
   const data = Array.from(map.values());
   if (data.length > 0) {
-    await prisma.conversation.createMany({ data });
+    await prisma.conversation.createMany({ data, skipDuplicates: true });
   }
 
   return { count: data.length };
