@@ -714,6 +714,52 @@ button:disabled {
   padding-right: 6px;
 }
 
+.thread-composer {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px;
+  border-radius: 999px;
+  border: 1px solid #1f2937;
+  background: #0f172a;
+}
+
+.thread-composer input {
+  flex: 1;
+  border: none;
+  background: transparent;
+  padding: 8px 6px;
+  color: #e2e8f0;
+  font-size: 0.9rem;
+}
+
+.thread-composer input:focus {
+  outline: none;
+}
+
+.thread-send {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  border: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(59, 130, 246, 0.2);
+  color: #93c5fd;
+  cursor: pointer;
+}
+
+.thread-send svg {
+  width: 18px;
+  height: 18px;
+}
+
+.thread-send:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 .thread-empty {
   display: flex;
   align-items: center;

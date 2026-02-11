@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   getCountries,
   getCountryCallingCode,
@@ -118,6 +118,8 @@ function App() {
     error: ""
   });
   const [toast, setToast] = useState({ message: "", tone: "" });
+  const [conversationDraft, setConversationDraft] = useState("");
+  const threadBodyRef = useRef(null);
 
   const loadMessages = async () => {
     setStatus((prev) => ({ ...prev, error: "" }));
@@ -371,6 +373,13 @@ function App() {
     markConversationRead(selectedOwner, selectedConversation);
   }, [selectedOwner, selectedConversation]);
 
+  useEffect(() => {
+    if (!threadBodyRef.current) {
+      return;
+    }
+    threadBodyRef.current.scrollTop = threadBodyRef.current.scrollHeight;
+  }, [sortedConversationMessages, selectedConversation]);
+
   const handleChange = (event) => {
     const { name, value } = event.target;
     if (name === "from" || name === "to") {
@@ -609,6 +618,42 @@ function App() {
     ]);
   };
 
+  const handleConversationSend = async (event) => {
+    event.preventDefault();
+    if (!conversationDraft.trim() || !selectedOwner || !selectedConversation) {
+      return;
+    }
+
+    try {
+      const response = await fetch(`${baseUrl}/messages/send`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          from: selectedOwner,
+          to: selectedConversation,
+          text: conversationDraft.trim()
+        })
+      });
+
+      if (!response.ok) {
+        const errorBody = await response.json();
+        throw new Error(errorBody?.message || errorBody?.error || "Failed to send");
+      }
+
+      setConversationDraft("");
+      await Promise.all([
+        loadConversationMessages(selectedOwner, selectedConversation),
+        loadConversations(selectedOwner),
+        loadMessages(),
+        loadEvents(),
+        loadNumbers()
+      ]);
+    } catch (error) {
+      setConversationStatus({ loading: false, error: error.message });
+      setToast({ message: error.message || "Send failed.", tone: "error" });
+    }
+  };
+
   useEffect(() => {
     if (!toast.message) {
       return;
@@ -772,7 +817,7 @@ function App() {
                         {sortedConversationMessages.length} messages
                       </span>
                     </div>
-                    <div className="thread-body">
+                    <div className="thread-body" ref={threadBodyRef}>
                       {sortedConversationMessages.length === 0 ? (
                         <p className="muted">
                           No messages in this conversation yet.
@@ -801,6 +846,27 @@ function App() {
                         })
                       )}
                     </div>
+                    <form className="thread-composer" onSubmit={handleConversationSend}>
+                      <input
+                        type="text"
+                        placeholder="Type your message"
+                        value={conversationDraft}
+                        onChange={(event) => setConversationDraft(event.target.value)}
+                      />
+                      <button
+                        type="submit"
+                        className="thread-send"
+                        aria-label="Send message"
+                        disabled={!conversationDraft.trim()}
+                      >
+                        <svg viewBox="0 0 24 24" role="img" focusable="false">
+                          <path
+                            d="M3.4 20.6l17-8.1c.8-.4.8-1.6 0-2L3.4 2.5c-.9-.4-1.9.4-1.6 1.4L3.9 10l7.6 2-7.6 2-2.1 6.1c-.3 1 .7 1.8 1.6 1.5z"
+                            fill="currentColor"
+                          />
+                        </svg>
+                      </button>
+                    </form>
                   </>
                 ) : (
                   <div className="thread-empty">
