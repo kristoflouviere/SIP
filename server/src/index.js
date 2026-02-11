@@ -87,6 +87,60 @@ const updateConversationForMessage = async ({ message, countUnread }) => {
   });
 };
 
+const rebuildConversations = async ({ owner }) => {
+  const where = owner
+    ? {
+        OR: [{ from: owner }, { to: owner }]
+      }
+    : undefined;
+
+  const messages = await prisma.message.findMany({
+    where,
+    orderBy: [{ occurredAt: "desc" }, { createdAt: "desc" }]
+  });
+
+  const map = new Map();
+  for (const message of messages) {
+    const ownerNumber = message.direction === "inbound" ? message.to : message.from;
+    const counterparty = message.direction === "inbound" ? message.from : message.to;
+
+    if (!ownerNumber || !counterparty) {
+      continue;
+    }
+
+    const key = `${ownerNumber}__${counterparty}`;
+    if (!map.has(key)) {
+      map.set(key, {
+        ownerNumber,
+        counterparty,
+        lastMessageAt: getMessageTime(message),
+        lastMessageText: message.text || "(no text)",
+        lastMessageDirection: message.direction || "unknown",
+        lastMessageId: message.id,
+        unreadCount: 0
+      });
+    }
+
+    if (message.direction === "inbound") {
+      const entry = map.get(key);
+      entry.unreadCount += 1;
+    }
+  }
+
+  if (owner) {
+    await prisma.conversation.deleteMany({ where: { ownerNumber: owner } });
+  } else {
+    await prisma.conversation.deleteMany();
+  }
+
+  const data = Array.from(map.values());
+  if (data.length > 0) {
+    await prisma.conversation.createMany({ data });
+  }
+
+  return { count: data.length };
+};
+
 app.use(cors());
 app.use(express.json({ limit: "2mb" }));
 
@@ -185,6 +239,17 @@ app.post("/conversations/mark-read", async (req, res) => {
   });
 
   res.json({ ok: true, conversation: updated });
+});
+
+app.post("/conversations/rebuild", async (req, res) => {
+  try {
+    const { owner } = req.body || {};
+    const result = await rebuildConversations({ owner });
+    res.json({ ok: true, ...result });
+  } catch (error) {
+    console.error("Conversation rebuild failed", error);
+    res.status(500).json({ error: "Rebuild failed" });
+  }
 });
 
 const syncInboundMessages = async ({ since }) => {

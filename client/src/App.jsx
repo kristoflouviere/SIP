@@ -197,6 +197,23 @@ function App() {
     }
   };
 
+  const rebuildConversations = async (ownerNumber) => {
+    if (!ownerNumber) {
+      return;
+    }
+    setConversationStatus((prev) => ({ ...prev, loading: true, error: "" }));
+    try {
+      await fetch(`${baseUrl}/conversations/rebuild`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ owner: ownerNumber })
+      });
+      await loadConversations(ownerNumber);
+    } catch (error) {
+      setConversationStatus({ loading: false, error: error.message });
+    }
+  };
+
   useEffect(() => {
     loadMessages();
     loadNumbers();
@@ -591,6 +608,13 @@ function App() {
             </span>
             <button className="ghost" onClick={() => loadConversations(selectedOwner)}>
               Refresh conversations
+            </button>
+            <button
+              className="ghost"
+              type="button"
+              onClick={() => rebuildConversations(selectedOwner)}
+            >
+              Rebuild conversations
             </button>
           </div>
         </div>
