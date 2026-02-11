@@ -268,18 +268,62 @@ app.get("/conversations/history", async (req, res) => {
   });
 
   const dedupedMap = new Map();
+  const fallbackBuckets = new Map();
+  const mergeWindowMs = 120000;
+
   for (const message of messages) {
     const timestamp = getMessageTime(message);
-    const roundedSeconds = Math.floor(timestamp.getTime() / 1000);
     const key = message.telnyxMessageId
       ? `telnyx:${message.telnyxMessageId}`
-      : `fallback:${message.direction}|${message.from}|${message.to}|${
-          message.text || ""
-        }|${roundedSeconds}`;
+      : null;
 
-    const existing = dedupedMap.get(key);
-    if (!existing || timestamp > getMessageTime(existing)) {
-      dedupedMap.set(key, message);
+    if (key) {
+      const existing = dedupedMap.get(key);
+      if (!existing || timestamp > getMessageTime(existing)) {
+        dedupedMap.set(key, message);
+      }
+      continue;
+    }
+
+    const fallbackKey = `fallback:${message.from}|${message.to}|${
+      message.text || ""
+    }`;
+    const bucket = fallbackBuckets.get(fallbackKey) || [];
+    bucket.push(message);
+    fallbackBuckets.set(fallbackKey, bucket);
+  }
+
+  for (const bucket of fallbackBuckets.values()) {
+    bucket.sort((a, b) => getMessageTime(a) - getMessageTime(b));
+
+    for (const message of bucket) {
+      const timestamp = getMessageTime(message).getTime();
+      const bestMatch = Array.from(dedupedMap.values()).find((candidate) => {
+        if (!candidate.telnyxMessageId) {
+          return false;
+        }
+        if (candidate.from !== message.from || candidate.to !== message.to) {
+          return false;
+        }
+        if ((candidate.text || "") !== (message.text || "")) {
+          return false;
+        }
+        const candidateTime = getMessageTime(candidate).getTime();
+        return Math.abs(candidateTime - timestamp) <= mergeWindowMs;
+      });
+
+      if (bestMatch) {
+        continue;
+      }
+
+      const fallbackTime = Math.floor(timestamp / 1000);
+      const fallbackId = `fallback:${message.from}|${message.to}|${
+        message.text || ""
+      }|${fallbackTime}`;
+      const existing = dedupedMap.get(fallbackId);
+      if (!existing || timestamp > getMessageTime(existing)) {
+        dedupedMap.set(fallbackId, message);
+      }
     }
   }
 
@@ -551,7 +595,7 @@ app.post("/webhooks/telnyx", async (req, res) => {
   }
 
   try {
-    const telnyxMessageIdForSave = payload.id || null;
+    const telnyxMessageIdForSave = payload.id || payload.message_id || null;
     const existing = telnyxMessageIdForSave
       ? await prisma.message.findFirst({
           where: { telnyxMessageId: telnyxMessageIdForSave }
