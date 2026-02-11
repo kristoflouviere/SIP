@@ -403,7 +403,14 @@ function App() {
             </label>
             <div className="swap-row">
               <button type="button" className="swap-button" onClick={handleSwap}>
-                <span className="swap-icon">&updownarrow;</span>
+                <span className="swap-icon" aria-hidden="true">
+                  <svg viewBox="0 0 24 24" role="img" focusable="false">
+                    <path
+                      d="M12 3l4 4h-3v6h-2V7H8l4-4zm0 18l-4-4h3V11h2v6h3l-4 4z"
+                      fill="currentColor"
+                    />
+                  </svg>
+                </span>
                 Swap
               </button>
             </div>
