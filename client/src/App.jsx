@@ -117,6 +117,7 @@ function App() {
     loading: false,
     error: ""
   });
+  const [toast, setToast] = useState({ message: "", tone: "" });
 
   const loadMessages = async () => {
     setStatus((prev) => ({ ...prev, error: "" }));
@@ -318,14 +319,20 @@ function App() {
     }
     setConversationStatus((prev) => ({ ...prev, loading: true, error: "" }));
     try {
-      await fetch(`${baseUrl}/conversations/rebuild`, {
+      const response = await fetch(`${baseUrl}/conversations/rebuild`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ owner: ownerNumber })
       });
+      if (!response.ok) {
+        const body = await response.json();
+        throw new Error(body?.error || "Rebuild failed");
+      }
       await loadConversations(ownerNumber);
+      setToast({ message: "Conversations rebuilt.", tone: "success" });
     } catch (error) {
       setConversationStatus({ loading: false, error: error.message });
+      setToast({ message: error.message || "Rebuild failed.", tone: "error" });
     }
   };
 
@@ -602,6 +609,16 @@ function App() {
     ]);
   };
 
+  useEffect(() => {
+    if (!toast.message) {
+      return;
+    }
+    const timeout = setTimeout(() => {
+      setToast({ message: "", tone: "" });
+    }, 2800);
+    return () => clearTimeout(timeout);
+  }, [toast]);
+
   const refreshDatabase = async () => {
     await loadDbTables();
     const openTables = Object.entries(dbState)
@@ -629,6 +646,9 @@ function App() {
       </header>
 
       <div className="top-area">
+        {toast.message ? (
+          <div className={`toast ${toast.tone}`}>{toast.message}</div>
+        ) : null}
         <div className="top-nav">
           <span className="eyebrow">Secondary nav</span>
           <div className="nav-links">
