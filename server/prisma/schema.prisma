@@ -17,10 +17,20 @@ model Message {
   telnyxMessageId String?
   telnyxEventId   String?
   occurredAt      DateTime?
+  readAt          DateTime?
+  state           MessageState @default(UNREAD)
+  tags            Json?
   createdAt       DateTime @default(now())
   raw             Json?
 
   events          MessageEvent[]
+}
+
+enum MessageState {
+  READ
+  UNREAD
+  ARCHIVED
+  DELETED
 }
 
 model FromNumber {
@@ -64,8 +74,16 @@ model Conversation {
   lastMessageId        String
   unreadCount          Int      @default(0)
   lastReadAt           DateTime?
+  state                ConversationState @default(ACTIVE)
+  bookmarked           Boolean @default(false)
   createdAt            DateTime @default(now())
   updatedAt            DateTime @updatedAt
 
   @@unique([ownerNumber, counterparty], name: "owner_counterparty")
+}
+
+enum ConversationState {
+  ACTIVE
+  ARCHIVED
+  DELETED
 }

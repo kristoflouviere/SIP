@@ -28,10 +28,13 @@ const tableConfig = {
       "telnyxMessageId",
       "telnyxEventId",
       "occurredAt",
+      "readAt",
+      "state",
+      "tags",
       "createdAt",
       "raw"
     ],
-    searchableFields: ["direction", "from", "to", "text", "status"],
+    searchableFields: ["direction", "from", "to", "text", "status", "state"],
     fieldTypes: {
       id: "string",
       direction: "string",
@@ -42,6 +45,9 @@ const tableConfig = {
       telnyxMessageId: "string",
       telnyxEventId: "string",
       occurredAt: "datetime",
+      readAt: "datetime",
+      state: "string",
+      tags: "json",
       createdAt: "datetime",
       raw: "json"
     },
@@ -84,6 +90,8 @@ const tableConfig = {
       "lastMessageId",
       "unreadCount",
       "lastReadAt",
+      "state",
+      "bookmarked",
       "createdAt",
       "updatedAt"
     ],
@@ -98,6 +106,8 @@ const tableConfig = {
       lastMessageId: "string",
       unreadCount: "number",
       lastReadAt: "datetime",
+      state: "string",
+      bookmarked: "boolean",
       createdAt: "datetime",
       updatedAt: "datetime"
     },
@@ -242,6 +252,21 @@ const getMessageTime = (message) => {
   return new Date();
 };
 
+const resolveDefaultState = (direction) =>
+  direction === "inbound" ? "UNREAD" : "READ";
+
+const normalizeTags = (value) => (Array.isArray(value) ? value : []);
+
+const isMessageUnread = (message) => {
+  if (!message) {
+    return false;
+  }
+  if (message.state) {
+    return message.state === "UNREAD";
+  }
+  return !message.readAt;
+};
+
 const updateConversationForMessage = async ({ message, countUnread }) => {
   if (!message) {
     return;
@@ -353,6 +378,24 @@ const rebuildConversations = async ({ owner }) => {
       }
     : undefined;
 
+  const existingConversations = await prisma.conversation.findMany({
+    where: owner ? { ownerNumber: owner } : undefined,
+    select: {
+      ownerNumber: true,
+      counterparty: true,
+      state: true,
+      bookmarked: true,
+      lastReadAt: true
+    }
+  });
+
+  const existingMap = new Map(
+    existingConversations.map((item) => [
+      `${item.ownerNumber}__${item.counterparty}`,
+      item
+    ])
+  );
+
   const messages = await prisma.message.findMany({
     where,
     orderBy: [{ occurredAt: "desc" }, { createdAt: "desc" }]
@@ -381,6 +424,7 @@ const rebuildConversations = async ({ owner }) => {
 
     const key = `${ownerNumber}__${counterparty}`;
     if (!map.has(key)) {
+      const existing = existingMap.get(key);
       map.set(key, {
         ownerNumber,
         counterparty,
@@ -388,11 +432,17 @@ const rebuildConversations = async ({ owner }) => {
         lastMessageText: message.text || "(no text)",
         lastMessageDirection: message.direction || "unknown",
         lastMessageId: message.id,
-        unreadCount: 0
+        unreadCount: 0,
+        state: existing?.state || "ACTIVE",
+        bookmarked: existing?.bookmarked ?? false,
+        lastReadAt: existing?.lastReadAt || null
       });
     }
 
-    if (owner ? message.to === owner : message.direction === "inbound") {
+    if (
+      (owner ? message.to === owner : message.direction === "inbound") &&
+      isMessageUnread(message)
+    ) {
       const entry = map.get(key);
       entry.unreadCount += 1;
     }
@@ -561,7 +611,38 @@ app.get("/conversations", async (req, res) => {
     orderBy: { lastMessageAt: "desc" }
   });
 
-  res.json({ conversations });
+  const withActivePreview = await Promise.all(
+    conversations.map(async (conversation) => {
+      const activeMessage = await prisma.message.findFirst({
+        where: {
+          OR: [
+            { direction: "outbound", from: owner, to: conversation.counterparty },
+            { direction: "inbound", from: conversation.counterparty, to: owner }
+          ],
+          state: { in: ["READ", "UNREAD"] }
+        },
+        orderBy: [{ occurredAt: "desc" }, { createdAt: "desc" }]
+      });
+
+      if (!activeMessage) {
+        return {
+          ...conversation,
+          lastMessageText: "",
+          lastMessageAt: null
+        };
+      }
+
+      return {
+        ...conversation,
+        lastMessageText: activeMessage.text || "",
+        lastMessageAt: getMessageTime(activeMessage),
+        lastMessageDirection: activeMessage.direction || conversation.lastMessageDirection,
+        lastMessageId: activeMessage.id
+      };
+    })
+  );
+
+  res.json({ conversations: withActivePreview });
 });
 
 app.get("/conversations/history", async (req, res) => {
@@ -694,6 +775,54 @@ app.post("/conversations/mark-read", async (req, res) => {
   res.json({ ok: true, conversation: updated });
 });
 
+app.post("/conversations/update", async (req, res) => {
+  const { owner, counterparty, state, bookmarked } = req.body || {};
+  if (!owner || !counterparty) {
+    return res.status(400).json({ error: "owner and counterparty are required" });
+  }
+
+  const data = {};
+  const allowedStates = new Set(["ACTIVE", "ARCHIVED", "DELETED"]);
+  if (state) {
+    if (!allowedStates.has(state)) {
+      return res.status(400).json({ error: "Invalid state" });
+    }
+    data.state = state;
+  }
+  if (bookmarked !== undefined) {
+    data.bookmarked = Boolean(bookmarked);
+  }
+
+  if (Object.keys(data).length === 0) {
+    return res.status(400).json({ error: "state or bookmarked is required" });
+  }
+
+  const existing = await prisma.conversation.findUnique({
+    where: {
+      owner_counterparty: {
+        ownerNumber: owner,
+        counterparty
+      }
+    }
+  });
+
+  if (!existing) {
+    return res.status(404).json({ error: "Conversation not found" });
+  }
+
+  const updated = await prisma.conversation.update({
+    where: {
+      owner_counterparty: {
+        ownerNumber: owner,
+        counterparty
+      }
+    },
+    data
+  });
+
+  res.json({ ok: true, conversation: updated });
+});
+
 app.post("/conversations/rebuild", async (req, res) => {
   try {
     const { owner } = req.body || {};
@@ -766,6 +895,7 @@ const syncInboundMessages = async ({ since }) => {
               status: item.to?.[0]?.status || item.status || null,
               telnyxMessageId,
               occurredAt: item.created_at ? new Date(item.created_at) : null,
+              state: resolveDefaultState(item.direction || "inbound"),
               raw: item
             }
           });
@@ -834,6 +964,7 @@ app.post("/messages/send", async (req, res) => {
         status: messageData?.to?.[0]?.status || messageData?.status || null,
         telnyxMessageId: messageData?.id || null,
         occurredAt: messageData?.created_at ? new Date(messageData.created_at) : null,
+        state: "READ",
         raw: response.data
       }
     });
@@ -876,6 +1007,115 @@ app.post("/messages/send", async (req, res) => {
       error.message;
     res.status(status).json({ error: "Failed to send", message, details });
   }
+});
+
+app.post("/messages/mark-read", async (req, res) => {
+  const { owner, counterparty, ids } = req.body || {};
+  if (!owner || !counterparty || !Array.isArray(ids) || ids.length === 0) {
+    return res
+      .status(400)
+      .json({ error: "owner, counterparty, and ids are required" });
+  }
+
+  await prisma.message.updateMany({
+    where: {
+      id: { in: ids },
+      readAt: null
+    },
+    data: {
+      readAt: new Date(),
+      state: "READ"
+    }
+  });
+
+  const unreadCount = await prisma.message.count({
+    where: {
+      direction: "inbound",
+      from: counterparty,
+      to: owner,
+      readAt: null
+    }
+  });
+
+  const conversation = await prisma.conversation.findUnique({
+    where: {
+      owner_counterparty: {
+        ownerNumber: owner,
+        counterparty
+      }
+    }
+  });
+
+  if (conversation) {
+    await prisma.conversation.update({
+      where: {
+        owner_counterparty: {
+          ownerNumber: owner,
+          counterparty
+        }
+      },
+      data: {
+        unreadCount,
+        lastReadAt: new Date()
+      }
+    });
+  }
+
+  res.json({ ok: true, unreadCount });
+});
+
+app.post("/messages/bulk-update", async (req, res) => {
+  const { ids, state, toggleTag } = req.body || {};
+  if (!Array.isArray(ids) || ids.length === 0) {
+    return res.status(400).json({ error: "ids array is required" });
+  }
+
+  if (!state && !toggleTag) {
+    return res.status(400).json({ error: "state or toggleTag is required" });
+  }
+
+  let updatedStateCount = 0;
+  let updatedTagCount = 0;
+
+  if (state) {
+    const data = { state };
+    if (state === "READ") {
+      data.readAt = new Date();
+    }
+    if (state === "UNREAD") {
+      data.readAt = null;
+    }
+    const result = await prisma.message.updateMany({
+      where: { id: { in: ids } },
+      data
+    });
+    updatedStateCount = result.count;
+  }
+
+  if (toggleTag) {
+    const tag = String(toggleTag);
+    const messages = await prisma.message.findMany({
+      where: { id: { in: ids } },
+      select: { id: true, tags: true }
+    });
+
+    await Promise.all(
+      messages.map((message) => {
+        const tags = normalizeTags(message.tags);
+        const hasTag = tags.includes(tag);
+        const nextTags = hasTag
+          ? tags.filter((item) => item !== tag)
+          : [...tags, tag];
+        return prisma.message.update({
+          where: { id: message.id },
+          data: { tags: nextTags }
+        });
+      })
+    );
+    updatedTagCount = messages.length;
+  }
+
+  res.json({ ok: true, updatedStateCount, updatedTagCount });
 });
 
 app.post("/webhooks/telnyx", async (req, res) => {
@@ -944,6 +1184,7 @@ app.post("/webhooks/telnyx", async (req, res) => {
             telnyxMessageId: telnyxMessageIdForSave,
             telnyxEventId: event?.id || null,
             occurredAt: payload.received_at ? new Date(payload.received_at) : null,
+            state: resolveDefaultState(direction),
             raw: event
           }
         });
