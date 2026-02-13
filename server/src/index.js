@@ -9,6 +9,23 @@ dotenv.config();
 const app = express();
 const prisma = new PrismaClient();
 
+const mapWithConcurrency = async (items, limit, mapper) => {
+  const results = new Array(items.length);
+  const max = Math.max(1, Math.min(limit, items.length));
+  let index = 0;
+
+  const workers = Array.from({ length: max }, async () => {
+    while (index < items.length) {
+      const current = index;
+      index += 1;
+      results[current] = await mapper(items[current], current);
+    }
+  });
+
+  await Promise.all(workers);
+  return results;
+};
+
 const PORT = process.env.PORT || 3001;
 const TELNYX_API_KEY = process.env.TELNYX_API_KEY || "";
 const defaultSyncOnStartup = process.env.NODE_ENV === "production" ? "false" : "true";
@@ -611,17 +628,25 @@ app.get("/conversations", async (req, res) => {
     orderBy: { lastMessageAt: "desc" }
   });
 
-  const withActivePreview = await Promise.all(
-    conversations.map(async (conversation) => {
+  const withActivePreview = await mapWithConcurrency(
+    conversations,
+    4,
+    async (conversation) => {
       const activeMessage = await prisma.message.findFirst({
         where: {
-          OR: [
-            { direction: "outbound", from: owner, to: conversation.counterparty },
-            { direction: "inbound", from: conversation.counterparty, to: owner }
-          ],
-          state: { in: ["READ", "UNREAD"] }
+          AND: [
+            {
+              OR: [
+                { direction: "outbound", from: owner, to: conversation.counterparty },
+                { direction: "inbound", from: conversation.counterparty, to: owner }
+              ]
+            },
+            {
+              OR: [{ state: null }, { state: { in: ["READ", "UNREAD"] } }]
+            }
+          ]
         },
-        orderBy: [{ occurredAt: "desc" }, { createdAt: "desc" }]
+        orderBy: [{ createdAt: "desc" }, { occurredAt: "desc" }]
       });
 
       if (!activeMessage) {
@@ -639,7 +664,7 @@ app.get("/conversations", async (req, res) => {
         lastMessageDirection: activeMessage.direction || conversation.lastMessageDirection,
         lastMessageId: activeMessage.id
       };
-    })
+    }
   );
 
   res.json({ conversations: withActivePreview });

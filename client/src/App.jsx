@@ -118,11 +118,11 @@ function App() {
     loading: false,
     error: ""
   });
-  const [toast, setToast] = useState({ message: "", tone: "" });
   const [conversationDraft, setConversationDraft] = useState("");
   const [selectionMode, setSelectionMode] = useState(false);
   const [selectedMessageIds, setSelectedMessageIds] = useState([]);
   const [messageFilter, setMessageFilter] = useState("active");
+  const [conversationView, setConversationView] = useState("recent");
   const threadBodyRef = useRef(null);
   const pendingReadIdsRef = useRef(new Set());
   const readFlushRef = useRef(null);
@@ -367,6 +367,13 @@ function App() {
       if (state && state !== "ACTIVE" && selectedConversation === counterparty) {
         setSelectedConversation("");
       }
+      if (
+        state === "ACTIVE" &&
+        conversationView === "archived" &&
+        selectedConversation === counterparty
+      ) {
+        setSelectedConversation("");
+      }
       await loadConversations(selectedOwner);
       setConversationMenuId("");
     } catch (error) {
@@ -426,29 +433,6 @@ function App() {
       await loadConversationMessages(selectedOwner, selectedConversation);
     } catch (error) {
       setConversationStatus({ loading: false, error: error.message });
-    }
-  };
-
-  const rebuildConversations = async (ownerNumber) => {
-    if (!ownerNumber) {
-      return;
-    }
-    setConversationStatus((prev) => ({ ...prev, loading: true, error: "" }));
-    try {
-      const response = await fetch(`${baseUrl}/conversations/rebuild`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ owner: ownerNumber })
-      });
-      if (!response.ok) {
-        const body = await response.json();
-        throw new Error(body?.error || "Rebuild failed");
-      }
-      await loadConversations(ownerNumber);
-      setToast({ message: "Conversations rebuilt.", tone: "success" });
-    } catch (error) {
-      setConversationStatus({ loading: false, error: error.message });
-      setToast({ message: error.message || "Rebuild failed.", tone: "error" });
     }
   };
 
@@ -573,24 +557,60 @@ function App() {
   }, [messages]);
 
   const sortedConversationMessages = useMemo(() => {
-    const seen = new Set();
-    const deduped = [];
+    const toTime = (message) =>
+      new Date(message?.occurredAt || message?.createdAt || 0).getTime();
+    const mergeWindowMs = 120000;
 
-    for (const message of conversationMessages) {
-      const timestamp = new Date(
-        message.occurredAt || message.createdAt || 0
-      ).getTime();
-      const key = message.telnyxMessageId
-        ? `telnyx:${message.telnyxMessageId}`
-        : `fallback:${message.direction}|${message.from}|${message.to}|${
-            message.text || ""
-          }|${timestamp}`;
+    const sorted = [...conversationMessages].sort((a, b) => toTime(a) - toTime(b));
+    const byTelnyxId = new Map();
+    const fallbackBuckets = new Map();
 
-      if (seen.has(key)) {
+    for (const message of sorted) {
+      const messageTime = toTime(message);
+
+      if (message.telnyxMessageId) {
+        const key = `telnyx:${message.telnyxMessageId}`;
+        const existing = byTelnyxId.get(key);
+        if (!existing || messageTime >= toTime(existing)) {
+          byTelnyxId.set(key, message);
+        }
         continue;
       }
 
-      seen.add(key);
+      const signature = `fallback:${message.direction}|${message.from}|${message.to}|${
+        message.text || ""
+      }`;
+      const bucket = fallbackBuckets.get(signature) || [];
+      let merged = false;
+
+      for (let index = 0; index < bucket.length; index += 1) {
+        const candidate = bucket[index];
+        if (Math.abs(toTime(candidate) - messageTime) <= mergeWindowMs) {
+          if (messageTime >= toTime(candidate)) {
+            bucket[index] = message;
+          }
+          merged = true;
+          break;
+        }
+      }
+
+      if (!merged) {
+        bucket.push(message);
+      }
+      fallbackBuckets.set(signature, bucket);
+    }
+
+    const mergedFallback = Array.from(fallbackBuckets.values()).flat();
+    const combined = [...byTelnyxId.values(), ...mergedFallback];
+
+    const seenRow = new Set();
+    const deduped = [];
+    for (const message of combined) {
+      const rowKey = message.id || `${message.telnyxMessageId || ""}|${toTime(message)}`;
+      if (seenRow.has(rowKey)) {
+        continue;
+      }
+      seenRow.add(rowKey);
       deduped.push(message);
     }
 
@@ -721,6 +741,10 @@ function App() {
     });
   }, [conversations]);
 
+  const archivedConversations = useMemo(() => {
+    return conversations.filter((item) => (item.state || "ACTIVE") === "ARCHIVED");
+  }, [conversations]);
+
   const sortedConversations = useMemo(() => {
     return [...visibleConversations].sort((a, b) => {
       const aBookmarked = Boolean(a.bookmarked);
@@ -736,6 +760,31 @@ function App() {
       return bTime - aTime;
     });
   }, [visibleConversations]);
+
+  const sortedArchivedConversations = useMemo(() => {
+    return [...archivedConversations].sort((a, b) => {
+      const aTime = new Date(a.lastMessageAt || 0).getTime();
+      const bTime = new Date(b.lastMessageAt || 0).getTime();
+      return bTime - aTime;
+    });
+  }, [archivedConversations]);
+
+  const isArchiveView = conversationView === "archived";
+  const canShowArchiveButton =
+    sortedConversations.length > 0 || sortedArchivedConversations.length > 0;
+  const displayedConversations = isArchiveView
+    ? sortedArchivedConversations
+    : sortedConversations;
+
+  useEffect(() => {
+    if (conversationView !== "archived") {
+      return;
+    }
+    if (sortedArchivedConversations.length === 0 && sortedConversations.length > 0) {
+      setConversationView("recent");
+      setSelectedConversation("");
+    }
+  }, [conversationView, sortedArchivedConversations, sortedConversations]);
 
   const selectedCount = selectedMessageIds.length;
   const isAllSelected =
@@ -965,19 +1014,8 @@ function App() {
       ]);
     } catch (error) {
       setConversationStatus({ loading: false, error: error.message });
-      setToast({ message: error.message || "Send failed.", tone: "error" });
     }
   };
-
-  useEffect(() => {
-    if (!toast.message) {
-      return;
-    }
-    const timeout = setTimeout(() => {
-      setToast({ message: "", tone: "" });
-    }, 2800);
-    return () => clearTimeout(timeout);
-  }, [toast]);
 
   const refreshDatabase = async () => {
     await loadDbTables();
@@ -1034,81 +1072,99 @@ function App() {
         </div>
       </nav>
 
-      <header className="app-header">
-        <div>
-          <p className="eyebrow">SIP Texting</p>
-          <h1>Telnyx Messaging Console</h1>
-          <p className="subtitle">
-            Manage inbound and outbound SMS across your SIP-enabled numbers.
-          </p>
-        </div>
-      </header>
-
       <div className="top-area">
-        {toast.message ? (
-          <div className={`toast ${toast.tone}`}>{toast.message}</div>
-        ) : null}
         {activeView === "console" ? (
           <section className="conversation-board">
             <div className="conversation-head">
-              <div>
+              <div className="conversation-head-main">
                 <p className="eyebrow">Production console</p>
-                <h2>Conversation overview</h2>
+                <div className="conversation-title-row">
+                  <h2>Conversation Overview</h2>
+                  <div className="owner-row owner-row-inline">
+                    {fromNumbers.length === 0 ? (
+                      <p className="muted owner-row-empty">No owned numbers yet.</p>
+                    ) : (
+                      fromNumbers.map((item) => (
+                        <button
+                          key={item.id}
+                          type="button"
+                          className={`owner-chip ${
+                            selectedOwner === item.number ? "active" : ""
+                          }`}
+                          onClick={() => {
+                            setSelectedOwner(item.number);
+                            setSelectedConversation("");
+                          }}
+                        >
+                          {item.number}
+                        </button>
+                      ))
+                    )}
+                  </div>
+                </div>
               </div>
-              <div className="conversation-actions">
-                <span className="badge">
-                  {selectedOwner ? selectedOwner : "No owned number"}
-                </span>
-                <button
-                  className="ghost"
-                  onClick={() => loadConversations(selectedOwner)}
-                >
-                  Refresh conversations
-                </button>
-                <button
-                  className="ghost"
-                  type="button"
-                  onClick={() => rebuildConversations(selectedOwner)}
-                >
-                  Rebuild conversations
-                </button>
-              </div>
-            </div>
-
-            <div className="owner-row">
-              {fromNumbers.length === 0 ? (
-                <p className="muted">No owned numbers yet.</p>
-              ) : (
-                fromNumbers.map((item) => (
-                  <button
-                    key={item.id}
-                    type="button"
-                    className={`owner-chip ${
-                      selectedOwner === item.number ? "active" : ""
-                    }`}
-                    onClick={() => {
-                      setSelectedOwner(item.number);
-                      setSelectedConversation("");
-                    }}
-                  >
-                    {item.number}
-                  </button>
-                ))
-              )}
             </div>
 
             <div className="conversation-panel">
               <div className="conversation-list">
                 <div className="list-header">
-                  <h3>Recent conversations</h3>
-                  <span className="badge">{sortedConversations.length} threads</span>
+                  <div className="list-title-wrap">
+                    <h3>
+                      {isArchiveView
+                        ? "Archived conversations"
+                        : "Recent conversations"}
+                    </h3>
+                    {canShowArchiveButton ? (
+                      <button
+                        type="button"
+                        className={`archive-toggle ${isArchiveView ? "active" : ""}`}
+                        title="Open Archive"
+                        aria-label="Open Archive"
+                        onClick={() => {
+                          setConversationView((prev) =>
+                            prev === "archived" ? "recent" : "archived"
+                          );
+                          setSelectedConversation("");
+                          setConversationMenuId("");
+                        }}
+                      >
+                        <svg
+                          className="archive-toggle-icon"
+                          xmlns="http://www.w3.org/2000/svg"
+                          viewBox="0 0 24 24"
+                          width="26"
+                          height="26"
+                          fill="none"
+                          stroke="#cbd5f5"
+                          strokeWidth="2.4"
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                          aria-hidden="true"
+                        >
+                          <path d="M4 7h16" />
+                          <path d="M6 7v12a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V7" />
+                          <path d="M9 11h6" />
+                          <path d="M12 11v6" />
+                          <path d="M10 15l2 2 2-2" />
+                        </svg>
+                        {sortedArchivedConversations.length > 0 ? (
+                          <span className="archive-count-badge">
+                            {sortedArchivedConversations.length}
+                          </span>
+                        ) : null}
+                      </button>
+                    ) : null}
+                  </div>
+                  <span className="badge">{displayedConversations.length} threads</span>
                 </div>
                 {conversationStatus.loading ? (
                   <p className="muted">Loading conversations...</p>
-                ) : sortedConversations.length === 0 ? (
-                  <p className="muted">No conversations yet.</p>
+                ) : displayedConversations.length === 0 ? (
+                  <p className="muted">
+                    {isArchiveView ? "No archived conversations yet." : "No conversations yet."}
+                  </p>
                 ) : (
-                  sortedConversations.map((item) => {
+                  displayedConversations.map((item) => {
                     const isActive = selectedConversation === item.counterparty;
                     const isUnread = item.unreadCount > 0;
                     const isBookmarked = Boolean(item.bookmarked);
@@ -1136,17 +1192,20 @@ function App() {
                       >
                         <div className="conversation-title">
                           <div className="conversation-title-main">
-                            <span>{item.counterparty}</span>
                             {isBookmarked ? (
-                              <span className="bookmark-indicator" aria-label="Bookmarked">
+                              <span
+                                className="bookmark-indicator"
+                                aria-label="Favorite conversation"
+                              >
                                 <svg viewBox="0 0 24 24" role="img" focusable="false">
                                   <path
-                                    d="M7 3h10a1 1 0 011 1v17l-6-3-6 3V4a1 1 0 011-1z"
+                                    d="M12 3.4l2.6 5.4 6 .9-4.3 4.2 1 6-5.3-2.8-5.3 2.8 1-6L3.4 9.7l6-.9L12 3.4z"
                                     fill="currentColor"
                                   />
                                 </svg>
                               </span>
                             ) : null}
+                            <span>{item.counterparty}</span>
                           </div>
                           <div className="conversation-title-actions">
                             <span className="conversation-time">
@@ -1172,54 +1231,85 @@ function App() {
                                   className="menu-panel"
                                   onClick={(event) => event.stopPropagation()}
                                 >
-                                  <button
-                                    type="button"
-                                    className="menu-item"
-                                    onClick={() =>
-                                      updateConversation({
-                                        counterparty: item.counterparty,
-                                        bookmarked: !isBookmarked
-                                      })
-                                    }
-                                  >
-                                    <span className="menu-icon bookmark">
-                                      <svg
-                                        viewBox="0 0 24 24"
-                                        role="img"
-                                        focusable="false"
-                                      >
-                                        <path
-                                          d="M7 3h10a1 1 0 011 1v17l-6-3-6 3V4a1 1 0 011-1z"
-                                          fill="currentColor"
-                                        />
-                                      </svg>
-                                    </span>
-                                    {isBookmarked ? "Remove bookmark" : "Bookmark"}
-                                  </button>
-                                  <button
-                                    type="button"
-                                    className="menu-item"
-                                    onClick={() =>
-                                      updateConversation({
-                                        counterparty: item.counterparty,
-                                        state: "ARCHIVED"
-                                      })
-                                    }
-                                  >
-                                    <span className="menu-icon archive">
-                                      <svg
-                                        viewBox="0 0 24 24"
-                                        role="img"
-                                        focusable="false"
-                                      >
-                                        <path
-                                          d="M4 3h16a1 1 0 011 1v4a1 1 0 01-1 1h-1v11a1 1 0 01-1 1H6a1 1 0 01-1-1V9H4a1 1 0 01-1-1V4a1 1 0 011-1zm2 6v10h12V9H6zm1-4v2h10V5H7zm2 5h6v2H9v-2z"
-                                          fill="currentColor"
-                                        />
-                                      </svg>
-                                    </span>
-                                    Archive
-                                  </button>
+                                  {!isArchiveView ? (
+                                    <button
+                                      type="button"
+                                      className="menu-item"
+                                      onClick={() =>
+                                        updateConversation({
+                                          counterparty: item.counterparty,
+                                          bookmarked: !isBookmarked
+                                        })
+                                      }
+                                    >
+                                      <span className="menu-icon bookmark">
+                                        <svg
+                                          viewBox="0 0 24 24"
+                                          role="img"
+                                          focusable="false"
+                                        >
+                                          <path
+                                            d="M12 3.4l2.6 5.4 6 .9-4.3 4.2 1 6-5.3-2.8-5.3 2.8 1-6L3.4 9.7l6-.9L12 3.4z"
+                                            fill="currentColor"
+                                          />
+                                        </svg>
+                                      </span>
+                                      {isBookmarked
+                                        ? "Remove from Favorites"
+                                        : "Add to Favorites"}
+                                    </button>
+                                  ) : null}
+                                  {isArchiveView ? (
+                                    <button
+                                      type="button"
+                                      className="menu-item"
+                                      onClick={() =>
+                                        updateConversation({
+                                          counterparty: item.counterparty,
+                                          state: "ACTIVE"
+                                        })
+                                      }
+                                    >
+                                      <span className="menu-icon restore">
+                                        <svg
+                                          viewBox="0 0 24 24"
+                                          role="img"
+                                          focusable="false"
+                                        >
+                                          <path
+                                            d="M12 4a8 8 0 016.9 4h-2.4l3.2 3.2L23 8h-2a10 10 0 00-17.2-2.6l1.4 1.4A8 8 0 0112 4zm8.2 11.6l-1.4-1.4A8 8 0 015 16h2.4L4.2 12.8 1 16h2a10 10 0 0017.2 2.6z"
+                                            fill="currentColor"
+                                          />
+                                        </svg>
+                                      </span>
+                                      Restore to Active Messages
+                                    </button>
+                                  ) : (
+                                    <button
+                                      type="button"
+                                      className="menu-item"
+                                      onClick={() =>
+                                        updateConversation({
+                                          counterparty: item.counterparty,
+                                          state: "ARCHIVED"
+                                        })
+                                      }
+                                    >
+                                      <span className="menu-icon archive">
+                                        <svg
+                                          viewBox="0 0 24 24"
+                                          role="img"
+                                          focusable="false"
+                                        >
+                                          <path
+                                            d="M4 3h16a1 1 0 011 1v4a1 1 0 01-1 1h-1v11a1 1 0 01-1 1H6a1 1 0 01-1-1V9H4a1 1 0 01-1-1V4a1 1 0 011-1zm2 6v10h12V9H6zm1-4v2h10V5H7zm2 5h6v2H9v-2z"
+                                            fill="currentColor"
+                                          />
+                                        </svg>
+                                      </span>
+                                      Archive
+                                    </button>
+                                  )}
                                   <button
                                     type="button"
                                     className="menu-item danger"
@@ -1235,14 +1325,20 @@ function App() {
                                         viewBox="0 0 24 24"
                                         role="img"
                                         focusable="false"
+                                        fill="none"
+                                        stroke="currentColor"
+                                        strokeWidth="2"
+                                        strokeLinecap="round"
+                                        strokeLinejoin="round"
                                       >
-                                        <path
-                                          d="M9 3h6l1 2h4v2H4V5h4l1-2zm1 6h2v8h-2V9zm4 0h2v8h-2V9z"
-                                          fill="currentColor"
-                                        />
+                                        <path d="M3 6h18" />
+                                        <path d="M8 6V4a1 1 0 011-1h6a1 1 0 011 1v2" />
+                                        <path d="M6 6l1 14a1 1 0 001 1h8a1 1 0 001-1l1-14" />
+                                        <path d="M10 11v6" />
+                                        <path d="M14 11v6" />
                                       </svg>
                                     </span>
-                                    Delete
+                                    Delete Conversation
                                   </button>
                                 </div>
                               ) : null}
@@ -1270,9 +1366,103 @@ function App() {
                         <p className="eyebrow">Conversation</p>
                         <h3>{selectedConversation}</h3>
                       </div>
-                      <span className="badge">
-                        {visibleConversationMessages.length} messages
-                      </span>
+                      <div className="thread-header-right">
+                        <div className="message-view">
+                          <p className="message-view-label">Message View</p>
+                          <div className="message-view-options">
+                            <button
+                              type="button"
+                              className={`owner-chip action-chip filter-chip ${
+                                messageFilter === "all" ? "active" : ""
+                              }`}
+                              onClick={() => setMessageFilter("all")}
+                            >
+                              All
+                            </button>
+                            <button
+                              type="button"
+                              className={`owner-chip action-chip filter-chip ${
+                                messageFilter === "active" ? "active" : ""
+                              }`}
+                              onClick={() => setMessageFilter("active")}
+                            >
+                              <span className="filter-icon active" aria-hidden="true">
+                                <svg viewBox="0 0 24 24" role="img" focusable="false">
+                                  <path
+                                    d="M12 4a8 8 0 108 8 8 8 0 00-8-8zm0 4a4 4 0 11-4 4 4 4 0 014-4z"
+                                    fill="currentColor"
+                                  />
+                                </svg>
+                              </span>
+                              Active
+                            </button>
+                            <button
+                              type="button"
+                              className={`owner-chip action-chip filter-chip ${
+                                messageFilter === "archived" ? "active" : ""
+                              }`}
+                              onClick={() => setMessageFilter("archived")}
+                            >
+                              <span className="filter-icon archive" aria-hidden="true">
+                                <svg viewBox="0 0 24 24" role="img" focusable="false">
+                                  <path
+                                    d="M4 3h16a1 1 0 011 1v4a1 1 0 01-1 1h-1v11a1 1 0 01-1 1H6a1 1 0 01-1-1V9H4a1 1 0 01-1-1V4a1 1 0 011-1zm2 6v10h12V9H6zm1-4v2h10V5H7zm2 5h6v2H9v-2z"
+                                    fill="currentColor"
+                                  />
+                                </svg>
+                              </span>
+                              Archived
+                            </button>
+                            <button
+                              type="button"
+                              className={`owner-chip action-chip filter-chip ${
+                                messageFilter === "deleted" ? "active" : ""
+                              }`}
+                              onClick={() => setMessageFilter("deleted")}
+                            >
+                              <span className="filter-icon delete" aria-hidden="true">
+                                <svg
+                                  viewBox="0 0 24 24"
+                                  role="img"
+                                  focusable="false"
+                                  fill="none"
+                                  stroke="currentColor"
+                                  strokeWidth="2"
+                                  strokeLinecap="round"
+                                  strokeLinejoin="round"
+                                >
+                                  <path d="M3 6h18" />
+                                  <path d="M8 6V4a1 1 0 011-1h6a1 1 0 011 1v2" />
+                                  <path d="M6 6l1 14a1 1 0 001 1h8a1 1 0 001-1l1-14" />
+                                  <path d="M10 11v6" />
+                                  <path d="M14 11v6" />
+                                </svg>
+                              </span>
+                              Deleted
+                            </button>
+                            <button
+                              type="button"
+                              className={`owner-chip action-chip filter-chip ${
+                                messageFilter === "bookmarked" ? "active" : ""
+                              }`}
+                              onClick={() => setMessageFilter("bookmarked")}
+                            >
+                              <span className="filter-icon bookmark" aria-hidden="true">
+                                <svg viewBox="0 0 24 24" role="img" focusable="false">
+                                  <path
+                                    d="M7 3h10a1 1 0 011 1v17l-6-3-6 3V4a1 1 0 011-1z"
+                                    fill="currentColor"
+                                  />
+                                </svg>
+                              </span>
+                              Bookmarked
+                            </button>
+                          </div>
+                        </div>
+                        <span className="badge">
+                          {visibleConversationMessages.length} messages
+                        </span>
+                      </div>
                     </div>
                     <div className="thread-toolbar">
                       <div className="thread-toolbar-left">
@@ -1298,90 +1488,8 @@ function App() {
                           </label>
                         ) : null}
                       </div>
-                      <div className="message-view">
-                        <p className="message-view-label">Message View</p>
-                        <div className="message-view-options">
-                          <button
-                            type="button"
-                            className={`owner-chip action-chip filter-chip ${
-                              messageFilter === "all" ? "active" : ""
-                            }`}
-                            onClick={() => setMessageFilter("all")}
-                          >
-                            All
-                          </button>
-                          <button
-                            type="button"
-                            className={`owner-chip action-chip filter-chip ${
-                              messageFilter === "active" ? "active" : ""
-                            }`}
-                            onClick={() => setMessageFilter("active")}
-                          >
-                            <span className="filter-icon active" aria-hidden="true">
-                              <svg viewBox="0 0 24 24" role="img" focusable="false">
-                                <path
-                                  d="M12 4a8 8 0 108 8 8 8 0 00-8-8zm0 4a4 4 0 11-4 4 4 4 0 014-4z"
-                                  fill="currentColor"
-                                />
-                              </svg>
-                            </span>
-                            Active
-                          </button>
-                          <button
-                            type="button"
-                            className={`owner-chip action-chip filter-chip ${
-                              messageFilter === "archived" ? "active" : ""
-                            }`}
-                            onClick={() => setMessageFilter("archived")}
-                          >
-                            <span className="filter-icon archive" aria-hidden="true">
-                              <svg viewBox="0 0 24 24" role="img" focusable="false">
-                                <path
-                                  d="M4 3h16a1 1 0 011 1v4a1 1 0 01-1 1h-1v11a1 1 0 01-1 1H6a1 1 0 01-1-1V9H4a1 1 0 01-1-1V4a1 1 0 011-1zm2 6v10h12V9H6zm1-4v2h10V5H7zm2 5h6v2H9v-2z"
-                                  fill="currentColor"
-                                />
-                              </svg>
-                            </span>
-                            Archived
-                          </button>
-                          <button
-                            type="button"
-                            className={`owner-chip action-chip filter-chip ${
-                              messageFilter === "deleted" ? "active" : ""
-                            }`}
-                            onClick={() => setMessageFilter("deleted")}
-                          >
-                            <span className="filter-icon delete" aria-hidden="true">
-                              <svg viewBox="0 0 24 24" role="img" focusable="false">
-                                <path
-                                  d="M9 3h6l1 2h4v2H4V5h4l1-2zm1 6h2v8h-2V9zm4 0h2v8h-2V9z"
-                                  fill="currentColor"
-                                />
-                              </svg>
-                            </span>
-                            Deleted
-                          </button>
-                          <button
-                            type="button"
-                            className={`owner-chip action-chip filter-chip ${
-                              messageFilter === "bookmarked" ? "active" : ""
-                            }`}
-                            onClick={() => setMessageFilter("bookmarked")}
-                          >
-                            <span className="filter-icon bookmark" aria-hidden="true">
-                              <svg viewBox="0 0 24 24" role="img" focusable="false">
-                                <path
-                                  d="M7 3h10a1 1 0 011 1v17l-6-3-6 3V4a1 1 0 011-1z"
-                                  fill="currentColor"
-                                />
-                              </svg>
-                            </span>
-                            Bookmarked
-                          </button>
-                        </div>
-                      </div>
                       {selectionMode && selectedCount > 0 ? (
-                        <div className="thread-toolbar-actions">
+                        <div className="selection-actions">
                           {messageFilter === "deleted" ? (
                             <button
                               type="button"
@@ -1391,32 +1499,34 @@ function App() {
                               Undelete
                             </button>
                           ) : null}
-                          <button
-                            type="button"
-                            className="owner-chip action-chip"
-                            onClick={() => bulkUpdateMessages({ state: "ARCHIVED" })}
-                          >
-                            Archive
-                          </button>
-                          <button
-                            type="button"
-                            className="owner-chip action-chip"
-                            onClick={() => bulkUpdateMessages({ state: "DELETED" })}
-                          >
-                            Delete
-                          </button>
-                          <button
-                            type="button"
-                            className="owner-chip action-chip"
-                            onClick={() =>
-                              bulkUpdateMessages({ toggleTag: "Favorite" })
-                            }
-                          >
-                            Tag Favorite
-                          </button>
-                          <span className="toolbar-count">
-                            {selectedCount} selected
-                          </span>
+                          <div className="selection-actions-row">
+                            <button
+                              type="button"
+                              className="owner-chip action-chip"
+                              onClick={() => bulkUpdateMessages({ state: "ARCHIVED" })}
+                            >
+                              Archive
+                            </button>
+                            <button
+                              type="button"
+                              className="owner-chip action-chip"
+                              onClick={() => bulkUpdateMessages({ state: "DELETED" })}
+                            >
+                              Delete
+                            </button>
+                            <button
+                              type="button"
+                              className="owner-chip action-chip"
+                              onClick={() =>
+                                bulkUpdateMessages({ toggleTag: "Favorite" })
+                              }
+                            >
+                              Tag Favorite
+                            </button>
+                            <span className="toolbar-count">
+                              {selectedCount} selected
+                            </span>
+                          </div>
                         </div>
                       ) : null}
                     </div>
@@ -1474,28 +1584,28 @@ function App() {
                                       message.occurredAt || message.createdAt
                                     )}
                                   </p>
-                                  <button
-                                    type="button"
-                                    className={`tag-star ${
-                                      isFavorite ? "active" : ""
-                                    }`}
-                                    aria-label={
-                                      isFavorite
-                                        ? "Remove Favorite tag"
-                                        : "Add Favorite tag"
-                                    }
-                                    onClick={(event) => {
-                                      event.stopPropagation();
-                                      toggleFavoriteTag(message.id);
-                                    }}
-                                  >
-                                    <svg viewBox="0 0 24 24" role="img" focusable="false">
-                                      <path
-                                        d="M12 3.4l2.6 5.4 6 .9-4.3 4.2 1 6-5.3-2.8-5.3 2.8 1-6L3.4 9.7l6-.9L12 3.4z"
-                                        fill="currentColor"
-                                      />
-                                    </svg>
-                                  </button>
+                                  {isFavorite ? (
+                                    <button
+                                      type="button"
+                                      className="tag-bookmark active"
+                                      aria-label="Remove Favorite tag"
+                                      onClick={(event) => {
+                                        event.stopPropagation();
+                                        toggleFavoriteTag(message.id);
+                                      }}
+                                    >
+                                      <svg
+                                        viewBox="0 0 24 24"
+                                        role="img"
+                                        focusable="false"
+                                      >
+                                        <path
+                                          d="M7 3h10a1 1 0 011 1v17l-6-3-6 3V4a1 1 0 011-1z"
+                                          fill="currentColor"
+                                        />
+                                      </svg>
+                                    </button>
+                                  ) : null}
                                 </div>
                               </div>
                             </div>
