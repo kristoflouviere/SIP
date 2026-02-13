@@ -8,6 +8,7 @@ import {
 import "./App.css";
 
 const defaultBaseUrl = "http://localhost:3001";
+const loadedConversationOwnersCache = new Set();
 const callingCodeSet = new Set(
   getCountries().map((country) => getCountryCallingCode(country))
 );
@@ -130,7 +131,6 @@ function App({ routeView = "app" }) {
   const threadBodyRef = useRef(null);
   const pendingReadIdsRef = useRef(new Set());
   const readFlushRef = useRef(null);
-  const loadedConversationOwnersRef = useRef(new Set());
 
   const loadMessages = async () => {
     setStatus((prev) => ({ ...prev, error: "" }));
@@ -302,7 +302,7 @@ function App({ routeView = "app" }) {
       setConversations([]);
       return;
     }
-    const hasLoadedOwner = loadedConversationOwnersRef.current.has(ownerNumber);
+    const hasLoadedOwner = loadedConversationOwnersCache.has(ownerNumber);
     if (!silent && !hasLoadedOwner) {
       setConversationStatus((prev) => ({ ...prev, loading: true, error: "" }));
     }
@@ -312,7 +312,7 @@ function App({ routeView = "app" }) {
       );
       const data = await response.json();
       setConversations(data.conversations || []);
-      loadedConversationOwnersRef.current.add(ownerNumber);
+      loadedConversationOwnersCache.add(ownerNumber);
       setConversationStatus((prev) => ({ ...prev, loading: false }));
     } catch (error) {
       setConversationStatus({ loading: false, error: error.message });
