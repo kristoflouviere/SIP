@@ -641,9 +641,7 @@ app.get("/conversations", async (req, res) => {
                 { direction: "inbound", from: conversation.counterparty, to: owner }
               ]
             },
-            {
-              OR: [{ state: null }, { state: { in: ["READ", "UNREAD"] } }]
-            }
+            { state: { in: ["READ", "UNREAD"] } }
           ]
         },
         orderBy: [{ createdAt: "desc" }, { occurredAt: "desc" }]
