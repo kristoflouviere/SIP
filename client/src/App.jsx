@@ -114,6 +114,7 @@ function App() {
   const [selectedConversation, setSelectedConversation] = useState("");
   const [conversationMessages, setConversationMessages] = useState([]);
   const [conversationMenuId, setConversationMenuId] = useState("");
+  const [messageMenuId, setMessageMenuId] = useState("");
   const [conversationStatus, setConversationStatus] = useState({
     loading: false,
     error: ""
@@ -440,6 +441,50 @@ function App() {
     }
   };
 
+  const runMessageMenuAction = async (messageId, action) => {
+    if (!messageId) {
+      return;
+    }
+
+    if (action === "select") {
+      if (!selectionMode) {
+        setSelectionMode(true);
+      }
+      toggleMessageSelection(messageId);
+      setMessageMenuId("");
+      return;
+    }
+
+    const payload = { ids: [messageId] };
+    if (action === "delete") {
+      payload.state = "DELETED";
+    } else if (action === "archive") {
+      payload.state = "ARCHIVED";
+    } else if (action === "bookmark") {
+      payload.toggleTag = "Favorite";
+    } else if (action === "tag") {
+      payload.toggleTag = "Tagged";
+    } else {
+      return;
+    }
+
+    try {
+      await fetch(`${baseUrl}/messages/bulk-update`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
+      });
+
+      await Promise.all([
+        loadConversationMessages(selectedOwner, selectedConversation),
+        loadConversations(selectedOwner, { silent: true })
+      ]);
+      setMessageMenuId("");
+    } catch (error) {
+      setConversationStatus({ loading: false, error: error.message });
+    }
+  };
+
   useEffect(() => {
     loadMessages();
     loadNumbers();
@@ -479,6 +524,9 @@ function App() {
       if (!event.target.closest(".conversation-menu")) {
         setConversationMenuId("");
       }
+      if (!event.target.closest(".message-menu")) {
+        setMessageMenuId("");
+      }
     };
     document.addEventListener("click", handleClick);
     return () => document.removeEventListener("click", handleClick);
@@ -487,6 +535,7 @@ function App() {
   useEffect(() => {
     setSelectionMode(false);
     setSelectedMessageIds([]);
+    setMessageMenuId("");
   }, [selectedOwner, selectedConversation]);
 
   useEffect(() => {
@@ -854,12 +903,23 @@ function App() {
     });
   }, [archivedConversations]);
 
+  const sortedBookmarkedConversations = useMemo(() => {
+    return sortedConversations.filter((item) => Boolean(item.bookmarked));
+  }, [sortedConversations]);
+
   const isArchiveView = conversationView === "archived";
+  const isBookmarkedView = conversationView === "bookmarked";
   const canShowArchiveButton =
     sortedConversations.length > 0 || sortedArchivedConversations.length > 0;
+  const canShowBookmarkedButton =
+    sortedConversations.length > 0 ||
+    sortedBookmarkedConversations.length > 0 ||
+    isBookmarkedView;
   const displayedConversations = isArchiveView
     ? sortedArchivedConversations
-    : sortedConversations;
+    : isBookmarkedView
+      ? sortedBookmarkedConversations
+      : sortedConversations;
 
   useEffect(() => {
     if (conversationView !== "archived") {
@@ -870,6 +930,27 @@ function App() {
       setSelectedConversation("");
     }
   }, [conversationView, sortedArchivedConversations, sortedConversations]);
+
+  useEffect(() => {
+    if (conversationView !== "bookmarked") {
+      return;
+    }
+    if (sortedBookmarkedConversations.length === 0 && sortedConversations.length > 0) {
+      setSelectedConversation("");
+    }
+  }, [conversationView, sortedBookmarkedConversations, sortedConversations]);
+
+  useEffect(() => {
+    if (conversationView === "bookmarked") {
+      if (messageFilter !== "bookmarked") {
+        setMessageFilter("bookmarked");
+      }
+      return;
+    }
+    if (messageFilter === "bookmarked") {
+      setMessageFilter("active");
+    }
+  }, [conversationView, messageFilter]);
 
   const selectedCount = selectedMessageIds.length;
   const isAllSelected =
@@ -1186,6 +1267,100 @@ function App() {
                       ))
                     )}
                   </div>
+                  {selectedConversation ? (
+                    <div className="message-view conversation-message-view">
+                      <p className="message-view-label">Message View</p>
+                      <div className="message-view-options">
+                        <button
+                          type="button"
+                          className={`owner-chip action-chip filter-chip ${
+                            messageFilter === "all" ? "active" : ""
+                          }`}
+                          onClick={() => setMessageFilter("all")}
+                        >
+                          All
+                        </button>
+                        <button
+                          type="button"
+                          className={`owner-chip action-chip filter-chip ${
+                            messageFilter === "active" ? "active" : ""
+                          }`}
+                          onClick={() => setMessageFilter("active")}
+                        >
+                          <span className="filter-icon active" aria-hidden="true">
+                            <svg viewBox="0 0 24 24" role="img" focusable="false">
+                              <path
+                                d="M12 4a8 8 0 108 8 8 8 0 00-8-8zm0 4a4 4 0 11-4 4 4 4 0 014-4z"
+                                fill="currentColor"
+                              />
+                            </svg>
+                          </span>
+                          Active
+                        </button>
+                        <button
+                          type="button"
+                          className={`owner-chip action-chip filter-chip ${
+                            messageFilter === "archived" ? "active" : ""
+                          }`}
+                          onClick={() => setMessageFilter("archived")}
+                        >
+                          <span className="filter-icon archive" aria-hidden="true">
+                            <svg viewBox="0 0 24 24" role="img" focusable="false">
+                              <path
+                                d="M4 3h16a1 1 0 011 1v4a1 1 0 01-1 1h-1v11a1 1 0 01-1 1H6a1 1 0 01-1-1V9H4a1 1 0 01-1-1V4a1 1 0 011-1zm2 6v10h12V9H6zm1-4v2h10V5H7zm2 5h6v2H9v-2z"
+                                fill="currentColor"
+                              />
+                            </svg>
+                          </span>
+                          Archived
+                        </button>
+                        <button
+                          type="button"
+                          className={`owner-chip action-chip filter-chip ${
+                            messageFilter === "deleted" ? "active" : ""
+                          }`}
+                          onClick={() => setMessageFilter("deleted")}
+                        >
+                          <span className="filter-icon delete" aria-hidden="true">
+                            <svg
+                              viewBox="0 0 24 24"
+                              role="img"
+                              focusable="false"
+                              fill="none"
+                              stroke="currentColor"
+                              strokeWidth="2"
+                              strokeLinecap="round"
+                              strokeLinejoin="round"
+                            >
+                              <path d="M3 6h18" />
+                              <path d="M8 6V4a1 1 0 011-1h6a1 1 0 011 1v2" />
+                              <path d="M6 6l1 14a1 1 0 001 1h8a1 1 0 001-1l1-14" />
+                              <path d="M10 11v6" />
+                              <path d="M14 11v6" />
+                            </svg>
+                          </span>
+                          Deleted
+                        </button>
+                        <button
+                          type="button"
+                          className={`owner-chip action-chip filter-chip ${
+                            messageFilter === "bookmarked" ? "active" : ""
+                          }`}
+                          onClick={() => setMessageFilter("bookmarked")}
+                        >
+                          <span className="filter-icon bookmark" aria-hidden="true">
+                            <svg viewBox="0 0 24 24" role="img" focusable="false">
+                              <path
+                                d="M7 3h10a1 1 0 011 1v17l-6-3-6 3V4a1 1 0 011-1z"
+                                fill="currentColor"
+                              />
+                            </svg>
+                          </span>
+                          Bookmarked
+                        </button>
+                      </div>
+                    </div>
+                  ) : null}
                 </div>
               </div>
             </div>
@@ -1197,8 +1372,44 @@ function App() {
                     <h3>
                       {isArchiveView
                         ? "Archived conversations"
+                        : isBookmarkedView
+                          ? "Bookmarked items"
                         : "Recent conversations"}
                     </h3>
+                    {canShowBookmarkedButton ? (
+                      <button
+                        type="button"
+                        className={`bookmark-toggle ${isBookmarkedView ? "active" : ""}`}
+                        title="Open Bookmarked Items"
+                        aria-label="Open Bookmarked Items"
+                        onClick={() => {
+                          setConversationView((prev) => {
+                            const nextView =
+                              prev === "bookmarked" ? "recent" : "bookmarked";
+                            setMessageFilter(
+                              nextView === "bookmarked" ? "bookmarked" : "active"
+                            );
+                            return nextView;
+                          });
+                          setSelectedConversation("");
+                          setConversationMenuId("");
+                        }}
+                      >
+                        <svg
+                          className="bookmark-toggle-icon"
+                          xmlns="http://www.w3.org/2000/svg"
+                          viewBox="0 0 24 24"
+                          width="26"
+                          height="26"
+                          aria-hidden="true"
+                        >
+                          <path
+                            d="M7 3h10a1 1 0 011 1v17l-6-3-6 3V4a1 1 0 011-1z"
+                            fill="currentColor"
+                          />
+                        </svg>
+                      </button>
+                    ) : null}
                     {canShowArchiveButton ? (
                       <button
                         type="button"
@@ -1246,7 +1457,11 @@ function App() {
                   <p className="muted">Loading conversations...</p>
                 ) : displayedConversations.length === 0 ? (
                   <p className="muted">
-                    {isArchiveView ? "No archived conversations yet." : "No conversations yet."}
+                    {isArchiveView
+                      ? "No archived conversations yet."
+                      : isBookmarkedView
+                        ? "No bookmarked items yet."
+                        : "No conversations yet."}
                   </p>
                 ) : (
                   displayedConversations.map((item) => {
@@ -1301,6 +1516,7 @@ function App() {
                                 type="button"
                                 className="menu-trigger"
                                 aria-label="Conversation actions"
+                                aria-expanded={menuOpen}
                                 onClick={(event) => {
                                   event.stopPropagation();
                                   const nextId = `${item.ownerNumber}::${item.counterparty}`;
@@ -1452,98 +1668,6 @@ function App() {
                         <h3>{selectedConversation}</h3>
                       </div>
                       <div className="thread-header-right">
-                        <div className="message-view">
-                          <p className="message-view-label">Message View</p>
-                          <div className="message-view-options">
-                            <button
-                              type="button"
-                              className={`owner-chip action-chip filter-chip ${
-                                messageFilter === "all" ? "active" : ""
-                              }`}
-                              onClick={() => setMessageFilter("all")}
-                            >
-                              All
-                            </button>
-                            <button
-                              type="button"
-                              className={`owner-chip action-chip filter-chip ${
-                                messageFilter === "active" ? "active" : ""
-                              }`}
-                              onClick={() => setMessageFilter("active")}
-                            >
-                              <span className="filter-icon active" aria-hidden="true">
-                                <svg viewBox="0 0 24 24" role="img" focusable="false">
-                                  <path
-                                    d="M12 4a8 8 0 108 8 8 8 0 00-8-8zm0 4a4 4 0 11-4 4 4 4 0 014-4z"
-                                    fill="currentColor"
-                                  />
-                                </svg>
-                              </span>
-                              Active
-                            </button>
-                            <button
-                              type="button"
-                              className={`owner-chip action-chip filter-chip ${
-                                messageFilter === "archived" ? "active" : ""
-                              }`}
-                              onClick={() => setMessageFilter("archived")}
-                            >
-                              <span className="filter-icon archive" aria-hidden="true">
-                                <svg viewBox="0 0 24 24" role="img" focusable="false">
-                                  <path
-                                    d="M4 3h16a1 1 0 011 1v4a1 1 0 01-1 1h-1v11a1 1 0 01-1 1H6a1 1 0 01-1-1V9H4a1 1 0 01-1-1V4a1 1 0 011-1zm2 6v10h12V9H6zm1-4v2h10V5H7zm2 5h6v2H9v-2z"
-                                    fill="currentColor"
-                                  />
-                                </svg>
-                              </span>
-                              Archived
-                            </button>
-                            <button
-                              type="button"
-                              className={`owner-chip action-chip filter-chip ${
-                                messageFilter === "deleted" ? "active" : ""
-                              }`}
-                              onClick={() => setMessageFilter("deleted")}
-                            >
-                              <span className="filter-icon delete" aria-hidden="true">
-                                <svg
-                                  viewBox="0 0 24 24"
-                                  role="img"
-                                  focusable="false"
-                                  fill="none"
-                                  stroke="currentColor"
-                                  strokeWidth="2"
-                                  strokeLinecap="round"
-                                  strokeLinejoin="round"
-                                >
-                                  <path d="M3 6h18" />
-                                  <path d="M8 6V4a1 1 0 011-1h6a1 1 0 011 1v2" />
-                                  <path d="M6 6l1 14a1 1 0 001 1h8a1 1 0 001-1l1-14" />
-                                  <path d="M10 11v6" />
-                                  <path d="M14 11v6" />
-                                </svg>
-                              </span>
-                              Deleted
-                            </button>
-                            <button
-                              type="button"
-                              className={`owner-chip action-chip filter-chip ${
-                                messageFilter === "bookmarked" ? "active" : ""
-                              }`}
-                              onClick={() => setMessageFilter("bookmarked")}
-                            >
-                              <span className="filter-icon bookmark" aria-hidden="true">
-                                <svg viewBox="0 0 24 24" role="img" focusable="false">
-                                  <path
-                                    d="M7 3h10a1 1 0 011 1v17l-6-3-6 3V4a1 1 0 011-1z"
-                                    fill="currentColor"
-                                  />
-                                </svg>
-                              </span>
-                              Bookmarked
-                            </button>
-                          </div>
-                        </div>
                         <span className="badge">
                           {visibleConversationMessages.length} messages
                         </span>
@@ -1629,6 +1753,7 @@ function App() {
                           const tags = Array.isArray(message.tags) ? message.tags : [];
                           const isFavorite = tags.includes("Favorite");
                           const isSelected = selectedMessageIds.includes(message.id);
+                          const messageMenuOpen = messageMenuId === message.id;
                           const isReadable =
                             message.direction === "inbound" &&
                             message.to === selectedOwner &&
@@ -1660,6 +1785,129 @@ function App() {
                                 </label>
                               ) : null}
                               <div className={`chat-bubble ${directionClass}`}>
+                                <div className="message-menu">
+                                  <button
+                                    type="button"
+                                    className="message-menu-trigger"
+                                    aria-label="Message actions"
+                                    aria-expanded={messageMenuOpen}
+                                    onClick={(event) => {
+                                      event.stopPropagation();
+                                      setMessageMenuId((prev) =>
+                                        prev === message.id ? "" : message.id
+                                      );
+                                    }}
+                                  >
+                                    ...
+                                  </button>
+                                  {messageMenuOpen ? (
+                                    <div
+                                      className="message-menu-panel"
+                                      onClick={(event) => event.stopPropagation()}
+                                    >
+                                      <button
+                                        type="button"
+                                        className="message-menu-action select"
+                                        data-label="Select"
+                                        aria-label="Select"
+                                        onClick={() =>
+                                          runMessageMenuAction(message.id, "select")
+                                        }
+                                      >
+                                        <svg viewBox="0 0 24 24" role="img" focusable="false">
+                                          <path
+                                            d="M9 12l2 2 4-4"
+                                            fill="none"
+                                            stroke="currentColor"
+                                            strokeWidth="2"
+                                            strokeLinecap="round"
+                                            strokeLinejoin="round"
+                                          />
+                                          <circle
+                                            cx="12"
+                                            cy="12"
+                                            r="9"
+                                            fill="none"
+                                            stroke="currentColor"
+                                            strokeWidth="1.8"
+                                          />
+                                        </svg>
+                                      </button>
+                                      <button
+                                        type="button"
+                                        className="message-menu-action delete"
+                                        data-label="Delete"
+                                        aria-label="Delete"
+                                        onClick={() =>
+                                          runMessageMenuAction(message.id, "delete")
+                                        }
+                                      >
+                                        <svg
+                                          viewBox="0 0 24 24"
+                                          role="img"
+                                          focusable="false"
+                                          fill="none"
+                                          stroke="currentColor"
+                                          strokeWidth="2"
+                                          strokeLinecap="round"
+                                          strokeLinejoin="round"
+                                        >
+                                          <path d="M3 6h18" />
+                                          <path d="M8 6V4a1 1 0 011-1h6a1 1 0 011 1v2" />
+                                          <path d="M6 6l1 14a1 1 0 001 1h8a1 1 0 001-1l1-14" />
+                                          <path d="M10 11v6" />
+                                          <path d="M14 11v6" />
+                                        </svg>
+                                      </button>
+                                      <button
+                                        type="button"
+                                        className="message-menu-action bookmark"
+                                        data-label="Bookmark"
+                                        aria-label="Bookmark"
+                                        onClick={() =>
+                                          runMessageMenuAction(message.id, "bookmark")
+                                        }
+                                      >
+                                        <svg viewBox="0 0 24 24" role="img" focusable="false">
+                                          <path
+                                            d="M7 3h10a1 1 0 011 1v17l-6-3-6 3V4a1 1 0 011-1z"
+                                            fill="currentColor"
+                                          />
+                                        </svg>
+                                      </button>
+                                      <button
+                                        type="button"
+                                        className="message-menu-action archive"
+                                        data-label="Archive"
+                                        aria-label="Archive"
+                                        onClick={() =>
+                                          runMessageMenuAction(message.id, "archive")
+                                        }
+                                      >
+                                        <svg viewBox="0 0 24 24" role="img" focusable="false">
+                                          <path
+                                            d="M4 3h16a1 1 0 011 1v4a1 1 0 01-1 1h-1v11a1 1 0 01-1 1H6a1 1 0 01-1-1V9H4a1 1 0 01-1-1V4a1 1 0 011-1zm2 6v10h12V9H6zm1-4v2h10V5H7zm2 5h6v2H9v-2z"
+                                            fill="currentColor"
+                                          />
+                                        </svg>
+                                      </button>
+                                      <button
+                                        type="button"
+                                        className="message-menu-action tag"
+                                        data-label="Tag"
+                                        aria-label="Tag"
+                                        onClick={() => runMessageMenuAction(message.id, "tag")}
+                                      >
+                                        <svg viewBox="0 0 24 24" role="img" focusable="false">
+                                          <path
+                                            d="M3 12l9-9h7a2 2 0 012 2v7l-9 9-9-9zM16 8a1.5 1.5 0 100-3 1.5 1.5 0 000 3z"
+                                            fill="currentColor"
+                                          />
+                                        </svg>
+                                      </button>
+                                    </div>
+                                  ) : null}
+                                </div>
                                 <p className="chat-text">
                                   {message.text || "(no text)"}
                                 </p>
