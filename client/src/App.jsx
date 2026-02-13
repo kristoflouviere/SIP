@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import {
   getCountries,
   getCountryCallingCode,
@@ -94,7 +95,8 @@ const getLengthMessage = (meta) => {
   }
 };
 
-function App() {
+function App({ routeView = "app" }) {
+  const navigate = useNavigate();
   const baseUrl = useMemo(
     () => import.meta.env.VITE_API_BASE_URL || defaultBaseUrl,
     []
@@ -106,7 +108,7 @@ function App() {
   const [form, setForm] = useState({ from: "", to: "", text: "" });
   const [status, setStatus] = useState({ loading: false, error: "", success: "" });
   const [eventStatus, setEventStatus] = useState({ loading: false, error: "" });
-  const [activeView, setActiveView] = useState("app");
+  const activeView = routeView;
   const [dbTables, setDbTables] = useState([]);
   const [dbState, setDbState] = useState({});
   const [selectedOwner, setSelectedOwner] = useState("");
@@ -128,6 +130,7 @@ function App() {
   const threadBodyRef = useRef(null);
   const pendingReadIdsRef = useRef(new Set());
   const readFlushRef = useRef(null);
+  const loadedConversationOwnersRef = useRef(new Set());
 
   const loadMessages = async () => {
     setStatus((prev) => ({ ...prev, error: "" }));
@@ -299,7 +302,8 @@ function App() {
       setConversations([]);
       return;
     }
-    if (!silent) {
+    const hasLoadedOwner = loadedConversationOwnersRef.current.has(ownerNumber);
+    if (!silent && !hasLoadedOwner) {
       setConversationStatus((prev) => ({ ...prev, loading: true, error: "" }));
     }
     try {
@@ -308,6 +312,7 @@ function App() {
       );
       const data = await response.json();
       setConversations(data.conversations || []);
+      loadedConversationOwnersRef.current.add(ownerNumber);
       setConversationStatus((prev) => ({ ...prev, loading: false }));
     } catch (error) {
       setConversationStatus({ loading: false, error: error.message });
@@ -1192,7 +1197,7 @@ function App() {
   };
 
   const handleHome = () => {
-    setActiveView("app");
+    navigate("/");
     window.scrollTo({ top: 0, behavior: "smooth" });
   };
 
@@ -1210,7 +1215,7 @@ function App() {
           <button
             type="button"
             className={`nav-button ${activeView === "app" ? "active" : ""}`}
-            onClick={() => setActiveView("app")}
+            onClick={() => navigate("/")}
           >
             App
           </button>
@@ -1222,14 +1227,14 @@ function App() {
               <button
                 type="button"
                 className="nav-menu-item"
-                onClick={() => setActiveView("database")}
+                onClick={() => navigate("/admin/database")}
               >
                 Database Tables
               </button>
               <button
                 type="button"
                 className="nav-menu-item"
-                onClick={() => setActiveView("dev")}
+                onClick={() => navigate("/admin/dev-consoles")}
               >
                 Dev Consoles
               </button>
