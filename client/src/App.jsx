@@ -123,6 +123,7 @@ function App() {
   const [selectedMessageIds, setSelectedMessageIds] = useState([]);
   const [messageFilter, setMessageFilter] = useState("active");
   const [conversationView, setConversationView] = useState("recent");
+  const realtimePollMs = Number(import.meta.env.VITE_REALTIME_POLL_MS || 3000);
   const threadBodyRef = useRef(null);
   const pendingReadIdsRef = useRef(new Set());
   const readFlushRef = useRef(null);
@@ -291,12 +292,15 @@ function App() {
     }
   };
 
-  const loadConversations = async (ownerNumber) => {
+  const loadConversations = async (ownerNumber, options = {}) => {
+    const { silent = false } = options;
     if (!ownerNumber) {
       setConversations([]);
       return;
     }
-    setConversationStatus((prev) => ({ ...prev, loading: true, error: "" }));
+    if (!silent) {
+      setConversationStatus((prev) => ({ ...prev, loading: true, error: "" }));
+    }
     try {
       const response = await fetch(
         `${baseUrl}/conversations?owner=${encodeURIComponent(ownerNumber)}`
@@ -494,6 +498,87 @@ function App() {
   useEffect(() => {
     setSelectedMessageIds([]);
   }, [messageFilter]);
+
+  useEffect(() => {
+    let disposed = false;
+    let timerId;
+
+    const pollRealtime = async () => {
+      if (disposed) {
+        return;
+      }
+
+      if (document.hidden) {
+        timerId = setTimeout(pollRealtime, realtimePollMs);
+        return;
+      }
+
+      try {
+        if (activeView === "app") {
+          await Promise.all([
+            loadNumbers(),
+            selectedOwner
+              ? loadConversations(selectedOwner, { silent: true })
+              : Promise.resolve(),
+            selectedOwner && selectedConversation
+              ? loadConversationMessages(selectedOwner, selectedConversation)
+              : Promise.resolve()
+          ]);
+        } else if (activeView === "dev") {
+          await Promise.all([
+            loadMessages(),
+            loadNumbers(),
+            loadEvents(),
+            selectedOwner
+              ? loadConversations(selectedOwner, { silent: true })
+              : Promise.resolve(),
+            selectedOwner && selectedConversation
+              ? loadConversationMessages(selectedOwner, selectedConversation)
+              : Promise.resolve()
+          ]);
+        } else if (activeView === "database") {
+          await loadDbTables();
+          const openTables = Object.entries(dbState)
+            .filter(([, value]) => value?.open)
+            .map(([name]) => name);
+          await Promise.all(openTables.map((name) => fetchTableRows(name)));
+        }
+      } catch {
+      } finally {
+        if (!disposed) {
+          timerId = setTimeout(pollRealtime, realtimePollMs);
+        }
+      }
+    };
+
+    const handleVisibilityChange = () => {
+      if (document.hidden) {
+        return;
+      }
+      if (timerId) {
+        clearTimeout(timerId);
+      }
+      pollRealtime();
+    };
+
+    timerId = setTimeout(pollRealtime, realtimePollMs);
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+
+    return () => {
+      disposed = true;
+      if (timerId) {
+        clearTimeout(timerId);
+      }
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
+  }, [
+    activeView,
+    baseUrl,
+    dbState,
+    realtimePollMs,
+    selectedConversation,
+    selectedOwner
+  ]);
 
   const handleChange = (event) => {
     const { name, value } = event.target;
