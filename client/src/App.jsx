@@ -106,7 +106,7 @@ function App() {
   const [form, setForm] = useState({ from: "", to: "", text: "" });
   const [status, setStatus] = useState({ loading: false, error: "", success: "" });
   const [eventStatus, setEventStatus] = useState({ loading: false, error: "" });
-  const [activeView, setActiveView] = useState("console");
+  const [activeView, setActiveView] = useState("app");
   const [dbTables, setDbTables] = useState([]);
   const [dbState, setDbState] = useState({});
   const [selectedOwner, setSelectedOwner] = useState("");
@@ -1026,7 +1026,7 @@ function App() {
   };
 
   const handleHome = () => {
-    setActiveView("console");
+    setActiveView("app");
     window.scrollTo({ top: 0, behavior: "smooth" });
   };
 
@@ -1043,8 +1043,8 @@ function App() {
           </button>
           <button
             type="button"
-            className={`nav-button ${activeView === "console" ? "active" : ""}`}
-            onClick={() => setActiveView("console")}
+            className={`nav-button ${activeView === "app" ? "active" : ""}`}
+            onClick={() => setActiveView("app")}
           >
             App
           </button>
@@ -1063,7 +1063,7 @@ function App() {
               <button
                 type="button"
                 className="nav-menu-item"
-                onClick={() => setActiveView("console")}
+                onClick={() => setActiveView("dev")}
               >
                 Dev Consoles
               </button>
@@ -1073,7 +1073,7 @@ function App() {
       </nav>
 
       <div className="top-area">
-        {activeView === "console" ? (
+        {activeView === "app" ? (
           <section className="conversation-board">
             <div className="conversation-head">
               <div className="conversation-head-main">
@@ -1648,9 +1648,9 @@ function App() {
         ) : null}
       </div>
 
-      <div className="section-divider" />
+      {activeView === "dev" ? <div className="section-divider" /> : null}
 
-      {activeView === "console" ? (
+      {activeView === "dev" ? (
         <section className="dev-container">
           <div className="dev-header">
             <p className="eyebrow">Development console</p>
@@ -1902,7 +1902,7 @@ function App() {
         </div>
           </section>
         </section>
-      ) : (
+      ) : activeView === "database" ? (
         <section className="db-view">
           <div className="db-head">
               <div>
@@ -2086,7 +2086,7 @@ function App() {
               )}
             </div>
         </section>
-      )}
+      ) : null}
     </div>
   );
 }
