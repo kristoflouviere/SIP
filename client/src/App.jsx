@@ -1,10 +1,14 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import {
   getCountries,
   getCountryCallingCode,
   validatePhoneNumberLength
 } from "libphonenumber-js/max";
+import ContactsManager from "./contacts/ContactsManager";
+import useAudioTranscriptionRecorder from "./features/transcription/useAudioTranscriptionRecorder";
+import MicRecordButton from "./features/transcription/MicRecordButton";
+import ComposeAttachmentsControl from "./features/attachments/ComposeAttachmentsControl";
 import "./App.css";
 
 const defaultBaseUrl = "http://localhost:3001";
@@ -123,6 +127,9 @@ function App({ routeView = "app" }) {
     error: ""
   });
   const [conversationDraft, setConversationDraft] = useState("");
+  const [pendingLocationShare, setPendingLocationShare] = useState(null);
+  const [composerAttachmentIds, setComposerAttachmentIds] = useState([]);
+  const [composerAttachmentResetToken, setComposerAttachmentResetToken] = useState(0);
   const [selectionMode, setSelectionMode] = useState(false);
   const [selectedMessageIds, setSelectedMessageIds] = useState([]);
   const [messageFilter, setMessageFilter] = useState("active");
@@ -131,6 +138,66 @@ function App({ routeView = "app" }) {
   const threadBodyRef = useRef(null);
   const pendingReadIdsRef = useRef(new Set());
   const readFlushRef = useRef(null);
+  const persistedSelectionRef = useRef("");
+
+  const appendToConversationDraft = useCallback((value) => {
+    const nextValue = String(value || "").trim();
+    if (!nextValue) {
+      return;
+    }
+
+    setConversationDraft((prev) => {
+      if (!prev) {
+        return nextValue;
+      }
+      return /\s$/.test(prev) ? `${prev}${nextValue}` : `${prev} ${nextValue}`;
+    });
+  }, []);
+
+  const handleTranscribeAudio = async (audioBlob, mimeType) => {
+    const extension = mimeType?.includes("ogg")
+      ? "ogg"
+      : mimeType?.includes("mp4")
+        ? "m4a"
+        : "webm";
+
+    const formData = new FormData();
+    formData.append("audio", audioBlob, `dictation.${extension}`);
+
+    const response = await fetch(`${baseUrl}/transcriptions/whisper`, {
+      method: "POST",
+      body: formData
+    });
+
+    const data = await response.json();
+    if (!response.ok) {
+      throw new Error(data?.error || "Transcription failed");
+    }
+
+    const transcript = (data?.text || "").trim();
+    if (!transcript) {
+      throw new Error("Transcription returned empty text.");
+    }
+
+    setConversationStatus((prev) => ({ ...prev, error: "" }));
+    setConversationDraft((prev) =>
+      prev?.trim() ? `${prev.trim()} ${transcript}` : transcript
+    );
+  };
+
+  const {
+    phase: recordingPhase,
+    isProcessing: isTranscribing,
+    isSupported: isRecordingSupported,
+    toggleRecording
+  } = useAudioTranscriptionRecorder({
+    onTranscribe: handleTranscribeAudio,
+    onError: (message) =>
+      setConversationStatus((prev) => ({
+        ...prev,
+        error: message || "Unable to transcribe audio."
+      }))
+  });
 
   const loadMessages = async () => {
     setStatus((prev) => ({ ...prev, error: "" }));
@@ -297,7 +364,7 @@ function App({ routeView = "app" }) {
   };
 
   const loadConversations = async (ownerNumber, options = {}) => {
-    const { silent = false } = options;
+    const { silent = false, restoreSelection = false } = options;
     if (!ownerNumber) {
       setConversations([]);
       return;
@@ -311,11 +378,57 @@ function App({ routeView = "app" }) {
         `${baseUrl}/conversations?owner=${encodeURIComponent(ownerNumber)}`
       );
       const data = await response.json();
-      setConversations(data.conversations || []);
+      const nextConversations = data.conversations || [];
+      const selectedCounterparty = data.selectedCounterparty || "";
+      setConversations(nextConversations);
+      setSelectedConversation((prev) => {
+        const prevExists = nextConversations.some(
+          (item) => item.counterparty === prev
+        );
+
+        if (!restoreSelection && prevExists) {
+          return prev;
+        }
+
+        if (
+          selectedCounterparty &&
+          nextConversations.some((item) => item.counterparty === selectedCounterparty)
+        ) {
+          return selectedCounterparty;
+        }
+
+        if (prevExists) {
+          return prev;
+        }
+
+        return nextConversations[0]?.counterparty || "";
+      });
       loadedConversationOwnersCache.add(ownerNumber);
       setConversationStatus((prev) => ({ ...prev, loading: false }));
     } catch (error) {
       setConversationStatus({ loading: false, error: error.message });
+    }
+  };
+
+  const persistSelectedConversation = async (ownerNumber, counterparty) => {
+    if (!ownerNumber || !counterparty) {
+      return;
+    }
+
+    const key = `${ownerNumber}::${counterparty}`;
+    if (persistedSelectionRef.current === key) {
+      return;
+    }
+
+    persistedSelectionRef.current = key;
+    try {
+      await fetch(`${baseUrl}/conversations/select`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ owner: ownerNumber, counterparty })
+      });
+    } catch {
+      persistedSelectionRef.current = "";
     }
   };
 
@@ -513,8 +626,15 @@ function App({ routeView = "app" }) {
       setConversations([]);
       return;
     }
-    loadConversations(selectedOwner);
+    loadConversations(selectedOwner, { restoreSelection: true });
   }, [selectedOwner]);
+
+  useEffect(() => {
+    if (!selectedOwner || !selectedConversation) {
+      return;
+    }
+    persistSelectedConversation(selectedOwner, selectedConversation);
+  }, [selectedOwner, selectedConversation]);
 
   useEffect(() => {
     if (!selectedOwner || !selectedConversation) {
@@ -1153,29 +1273,38 @@ function App({ routeView = "app" }) {
     ]);
   };
 
-  const handleConversationSend = async (event) => {
-    event.preventDefault();
-    if (!conversationDraft.trim() || !selectedOwner || !selectedConversation) {
-      return;
-    }
+  const requestConversationSend = useCallback(
+    async ({ text = "", attachmentIds = [], locationShare = null } = {}) => {
+      if (!selectedOwner || !selectedConversation) {
+        throw new Error("Select a conversation before sending");
+      }
 
-    try {
       const response = await fetch(`${baseUrl}/messages/send`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           from: selectedOwner,
           to: selectedConversation,
-          text: conversationDraft.trim()
+          text,
+          attachmentIds,
+          locationShare
         })
       });
 
       if (!response.ok) {
-        const errorBody = await response.json();
+        const errorBody = await response.json().catch(() => ({}));
         throw new Error(errorBody?.message || errorBody?.error || "Failed to send");
       }
 
-      setConversationDraft("");
+      return response.json();
+    },
+    [baseUrl, selectedConversation, selectedOwner]
+  );
+
+  const handleImmediateContactSend = useCallback(
+    async ({ attachmentIds }) => {
+      await requestConversationSend({ text: "", attachmentIds, locationShare: null });
+
       await Promise.all([
         loadConversationMessages(selectedOwner, selectedConversation),
         loadConversations(selectedOwner),
@@ -1183,6 +1312,73 @@ function App({ routeView = "app" }) {
         loadEvents(),
         loadNumbers()
       ]);
+    },
+    [
+      loadConversationMessages,
+      loadConversations,
+      loadEvents,
+      loadMessages,
+      loadNumbers,
+      requestConversationSend,
+      selectedConversation,
+      selectedOwner
+    ]
+  );
+
+  const handleConversationSend = async (event) => {
+    event.preventDefault();
+    if (!conversationDraft.trim() || !selectedOwner || !selectedConversation) {
+      return;
+    }
+
+    try {
+      await requestConversationSend({
+        text: conversationDraft.trim(),
+        attachmentIds: composerAttachmentIds,
+        locationShare:
+          pendingLocationShare &&
+          conversationDraft.includes(pendingLocationShare.url || "")
+            ? pendingLocationShare
+            : null
+      });
+
+      setConversationDraft("");
+      setPendingLocationShare(null);
+      setComposerAttachmentIds([]);
+      setComposerAttachmentResetToken((prev) => prev + 1);
+      await Promise.all([
+        loadConversationMessages(selectedOwner, selectedConversation),
+        loadConversations(selectedOwner),
+        loadMessages(),
+        loadEvents(),
+        loadNumbers()
+      ]);
+    } catch (error) {
+      setConversationStatus({ loading: false, error: error.message });
+    }
+  };
+
+  const handleAttachmentDownload = async (attachment) => {
+    if (!attachment?.id) {
+      return;
+    }
+
+    try {
+      const response = await fetch(`${baseUrl}/attachments/${attachment.id}/download`);
+      if (!response.ok) {
+        const errorBody = await response.json().catch(() => ({}));
+        throw new Error(errorBody?.error || "Failed to download attachment");
+      }
+
+      const blob = await response.blob();
+      const href = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = href;
+      anchor.download = attachment.fileName || "attachment";
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      URL.revokeObjectURL(href);
     } catch (error) {
       setConversationStatus({ loading: false, error: error.message });
     }
@@ -1205,7 +1401,7 @@ function App({ routeView = "app" }) {
     <div className="app">
       <nav className="top-nav">
         <div className="nav-brand">
-          <span className="eyebrow">SIP Texting</span>
+          <span className="eyebrow">Sales Tools 2026</span>
           <h2>Messaging Suite</h2>
         </div>
         <div className="nav-actions">
@@ -1218,6 +1414,13 @@ function App({ routeView = "app" }) {
             onClick={() => navigate("/")}
           >
             App
+          </button>
+          <button
+            type="button"
+            className={`nav-button ${activeView === "contacts" ? "active" : ""}`}
+            onClick={() => navigate("/contacts")}
+          >
+            Contacts
           </button>
           <div className="nav-dropdown">
             <button type="button" className="nav-button">
@@ -1265,6 +1468,7 @@ function App({ routeView = "app" }) {
                           onClick={() => {
                             setSelectedOwner(item.number);
                             setSelectedConversation("");
+                            persistedSelectionRef.current = "";
                           }}
                         >
                           {item.number}
@@ -1913,9 +2117,44 @@ function App({ routeView = "app" }) {
                                     </div>
                                   ) : null}
                                 </div>
-                                <p className="chat-text">
-                                  {message.text || "(no text)"}
-                                </p>
+                                {message.text ? (
+                                  <p className="chat-text">{message.text}</p>
+                                ) : !Array.isArray(message.attachments) ||
+                                  message.attachments.length === 0 ? (
+                                  <p className="chat-text">(no text)</p>
+                                ) : null}
+                                {Array.isArray(message.attachments) &&
+                                message.attachments.length > 0 ? (
+                                  <div className="chat-attachments">
+                                    {message.attachments.map((attachment) => (
+                                      <button
+                                        key={attachment.id}
+                                        type="button"
+                                        className="chat-attachment-chip"
+                                        onClick={() => handleAttachmentDownload(attachment)}
+                                        title={`Download ${attachment.fileName || "attachment"}`}
+                                      >
+                                        {attachment.kind === "CONTACT" ||
+                                        /\.vcf$/i.test(attachment.fileName || "") ? (
+                                          <svg viewBox="0 0 24 24" role="img" focusable="false">
+                                            <path
+                                              d="M4 4h16a2 2 0 012 2v12a2 2 0 01-2 2H4a2 2 0 01-2-2V6a2 2 0 012-2zm8 2.8a3.2 3.2 0 100 6.4 3.2 3.2 0 000-6.4zm0 8c-2.3 0-4.4 1.2-5.1 3h10.2c-.7-1.8-2.8-3-5.1-3z"
+                                              fill="currentColor"
+                                            />
+                                          </svg>
+                                        ) : (
+                                          <svg viewBox="0 0 24 24" role="img" focusable="false">
+                                            <path
+                                              d="M5 20h14v-2H5v2zm7-18v10.2l3.6-3.6L17 10l-5 5-5-5 1.4-1.4 3.6 3.6V2h2z"
+                                              fill="currentColor"
+                                            />
+                                          </svg>
+                                        )}
+                                        <span>{attachment.fileName || "Attachment"}</span>
+                                      </button>
+                                    ))}
+                                  </div>
+                                ) : null}
                                 <div className="chat-meta-row">
                                   <p className="chat-meta">
                                     {formatTimestamp(
@@ -1952,17 +2191,34 @@ function App({ routeView = "app" }) {
                       )}
                     </div>
                     <form className="thread-composer" onSubmit={handleConversationSend}>
+                      <ComposeAttachmentsControl
+                        baseUrl={baseUrl}
+                        ownerNumber={selectedOwner}
+                        counterparty={selectedConversation}
+                        disabled={isTranscribing}
+                        resetToken={composerAttachmentResetToken}
+                        onAttachmentIdsChange={setComposerAttachmentIds}
+                        onInsertText={appendToConversationDraft}
+                        onLocationSelected={setPendingLocationShare}
+                        onSendContactNow={handleImmediateContactSend}
+                      />
                       <input
                         type="text"
                         placeholder="Type your message"
                         value={conversationDraft}
                         onChange={(event) => setConversationDraft(event.target.value)}
                       />
+                      <MicRecordButton
+                        phase={recordingPhase}
+                        isProcessing={isTranscribing}
+                        isSupported={isRecordingSupported}
+                        onToggle={toggleRecording}
+                      />
                       <button
                         type="submit"
                         className="thread-send"
                         aria-label="Send message"
-                        disabled={!conversationDraft.trim()}
+                        disabled={!conversationDraft.trim() || isTranscribing}
                       >
                         <svg viewBox="0 0 24 24" role="img" focusable="false">
                           <path
@@ -2240,6 +2496,8 @@ function App({ routeView = "app" }) {
         </div>
           </section>
         </section>
+      ) : activeView === "contacts" ? (
+        <ContactsManager baseUrl={baseUrl} />
       ) : activeView === "database" ? (
         <section className="db-view">
           <div className="db-head">

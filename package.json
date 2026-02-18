@@ -1,11 +1,12 @@
 {
-  "name": "sip-texting",
+  "name": "sales-tools-2026",
   "version": "1.0.0",
-  "description": "SIP texting management app",
+  "description": "Sales Tools 2026 management app",
   "scripts": {
     "dev": "concurrently -k \"npm run dev -w client\" \"npm run dev -w server\"",
     "build": "npm run build -w client",
-    "start": "npm run start -w server"
+    "start": "npm run start -w server",
+    "audit:ci": "npm audit --json | node scripts/audit-ci.js"
   },
   "workspaces": [
     "client",

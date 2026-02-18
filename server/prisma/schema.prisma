@@ -24,6 +24,7 @@ model Message {
   raw             Json?
 
   events          MessageEvent[]
+  attachmentLinks MessageAttachment[]
 }
 
 enum MessageState {
@@ -74,6 +75,7 @@ model Conversation {
   lastMessageId        String
   unreadCount          Int      @default(0)
   lastReadAt           DateTime?
+  lastSelectedAt       DateTime?
   state                ConversationState @default(ACTIVE)
   bookmarked           Boolean @default(false)
   createdAt            DateTime @default(now())
@@ -86,4 +88,78 @@ enum ConversationState {
   ACTIVE
   ARCHIVED
   DELETED
+}
+
+model Contact {
+  id                 String   @id @default(uuid())
+  firstName          String?
+  lastName           String?
+  email              String?
+  address            String?
+  company            String?
+  phoneNumbers       Json?
+  linkedInProfiles   Json?
+  importedAt         DateTime?
+  source             String   @default("manual")
+  sourceImportMeta   Json?
+  sourceDetails      Json?
+  sourceExternalId   String?
+  googleRaw          Json?
+  googleFieldValues  Json?
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  @@index([email])
+  @@index([company])
+  @@unique([source, sourceExternalId], map: "contacts_source_external_id_unique")
+}
+
+model Attachment {
+  id           String            @id @default(uuid())
+  ownerNumber  String?
+  counterparty String?
+  kind         AttachmentKind
+  storage      AttachmentStorage @default(DATABASE)
+  fileName     String
+  mimeType     String?
+  sizeBytes    Int               @default(0)
+  storageKey   String?
+  storageEtag  String?
+  bytes        Bytes?
+  metadata     Json?
+  createdAt    DateTime          @default(now())
+  updatedAt    DateTime          @updatedAt
+
+  messageLinks MessageAttachment[]
+
+  @@index([ownerNumber, counterparty])
+  @@index([kind])
+  @@index([storage])
+  @@index([storageKey])
+}
+
+model MessageAttachment {
+  id           String     @id @default(uuid())
+  messageId    String
+  attachmentId String
+  createdAt    DateTime   @default(now())
+
+  message      Message    @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  attachment   Attachment @relation(fields: [attachmentId], references: [id], onDelete: Cascade)
+
+  @@unique([messageId, attachmentId])
+  @@index([attachmentId])
+}
+
+enum AttachmentKind {
+  FILE
+  CONTACT
+  MEDIA
+  CAMERA
+  LOCATION
+}
+
+enum AttachmentStorage {
+  DATABASE
+  OBJECT_STORE
 }

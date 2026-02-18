@@ -1,6 +1,6 @@
 services:
   - type: web
-    name: sip-texting-api
+    name: sales-tools-2026-api
     runtime: node
     plan: starter
     rootDir: server
@@ -20,7 +20,7 @@ services:
         value: "30"
 
   - type: web
-    name: sip-texting-client
+    name: sales-tools-2026-client
     runtime: static
     rootDir: client
     buildCommand: rm -f package-lock.json && npm install --include=optional && npm install @rollup/rollup-linux-x64-gnu --no-save && npm run build
