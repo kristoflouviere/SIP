@@ -35,10 +35,18 @@ enum MessageState {
 }
 
 model FromNumber {
-  id         String   @id @default(uuid())
-  number     String   @unique
-  firstUsedAt DateTime @default(now())
-  lastUsedAt  DateTime @default(now())
+  id                    String   @id @default(uuid())
+  number                String   @unique
+  description           String?
+  purpose               String?
+  tags                  String[] @default([])
+  dateAdded             DateTime @default(now())
+  firstUsedAt           DateTime @default(now())
+  lastUsedAt            DateTime @default(now())
+  lastSentAt            DateTime?
+  lastReceivedAt        DateTime?
+  totalMessagesSent     Int      @default(0)
+  totalMessagesReceived Int      @default(0)
 }
 
 model ToNumber {

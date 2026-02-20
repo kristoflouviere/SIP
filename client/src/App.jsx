@@ -12,6 +12,8 @@ import ComposeAttachmentsControl from "./features/attachments/ComposeAttachments
 import "./App.css";
 
 const defaultBaseUrl = "http://localhost:3206";
+const SYNC_ON_LOAD_STORAGE_KEY = "salestools2026.syncOwnedOnLoad";
+const OWNER_VISIBILITY_STORAGE_KEY = "salestools2026.ownerVisibility";
 const loadedConversationOwnersCache = new Set();
 const callingCodeSet = new Set(
   getCountries().map((country) => getCountryCallingCode(country))
@@ -40,6 +42,53 @@ const sanitizeE164 = (value) => {
   return trimmed.startsWith("+")
     ? "+" + trimmed.slice(1).replace(/\+/g, "")
     : trimmed.replace(/\+/g, "");
+};
+
+const normalizeConversationTarget = (value) => {
+  const cleaned = sanitizeE164(String(value || ""));
+  if (!cleaned) {
+    return "";
+  }
+  if (cleaned.startsWith("+")) {
+    return cleaned;
+  }
+
+  const digits = cleaned.replace(/\D/g, "");
+  if (!digits) {
+    return "";
+  }
+  if (digits.length === 10) {
+    return `+1${digits}`;
+  }
+  if (digits.length === 11 && digits.startsWith("1")) {
+    return `+${digits}`;
+  }
+
+  return `+${digits}`;
+};
+
+const normalizeOwnedNumberTag = (value) =>
+  String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, "-");
+
+const parseCustomTags = (value) =>
+  String(value || "")
+    .split(",")
+    .map((item) => normalizeOwnedNumberTag(item))
+    .filter(Boolean)
+    .filter((item, index, list) => list.indexOf(item) === index);
+
+const parseStoredJson = (value, fallback) => {
+  if (!value) {
+    return fallback;
+  }
+  try {
+    return JSON.parse(value);
+  } catch {
+    return fallback;
+  }
 };
 
 const analyzeNumber = (value) => {
@@ -112,6 +161,36 @@ function App({ routeView = "app" }) {
   const [toNumbers, setToNumbers] = useState([]);
   const [form, setForm] = useState({ from: "", to: "", text: "" });
   const [status, setStatus] = useState({ loading: false, error: "", success: "" });
+  const [numberSyncStatus, setNumberSyncStatus] = useState({
+    loading: false,
+    error: "",
+    success: ""
+  });
+  const [syncOwnedOnLoad, setSyncOwnedOnLoad] = useState(() => {
+    if (typeof window === "undefined") {
+      return false;
+    }
+    return window.localStorage.getItem(SYNC_ON_LOAD_STORAGE_KEY) === "true";
+  });
+  const [ownerVisibility, setOwnerVisibility] = useState(() => {
+    if (typeof window === "undefined") {
+      return {};
+    }
+    return parseStoredJson(
+      window.localStorage.getItem(OWNER_VISIBILITY_STORAGE_KEY),
+      {}
+    );
+  });
+  const [ownedNumberTagOptions, setOwnedNumberTagOptions] = useState([]);
+  const [ownedNumberEditorOpen, setOwnedNumberEditorOpen] = useState(false);
+  const [ownedNumberEditorTarget, setOwnedNumberEditorTarget] = useState("");
+  const [ownedNumberDraft, setOwnedNumberDraft] = useState({
+    description: "",
+    purpose: "",
+    selectedTags: [],
+    customTagsInput: ""
+  });
+  const [floatingToast, setFloatingToast] = useState(null);
   const [eventStatus, setEventStatus] = useState({ loading: false, error: "" });
   const activeView = routeView;
   const [dbTables, setDbTables] = useState([]);
@@ -127,6 +206,9 @@ function App({ routeView = "app" }) {
     error: ""
   });
   const [conversationDraft, setConversationDraft] = useState("");
+  const [newConversationModalOpen, setNewConversationModalOpen] = useState(false);
+  const [newConversationValue, setNewConversationValue] = useState("");
+  const [newConversationError, setNewConversationError] = useState("");
   const [pendingLocationShare, setPendingLocationShare] = useState(null);
   const [composerAttachmentIds, setComposerAttachmentIds] = useState([]);
   const [composerAttachmentResetToken, setComposerAttachmentResetToken] = useState(0);
@@ -139,6 +221,25 @@ function App({ routeView = "app" }) {
   const pendingReadIdsRef = useRef(new Set());
   const readFlushRef = useRef(null);
   const persistedSelectionRef = useRef("");
+  const pinnedManualConversationRef = useRef({ owner: "", counterparty: "" });
+  const toastTimeoutRef = useRef(null);
+  const toastDismissRef = useRef(null);
+
+  const visibleFromNumbers = useMemo(
+    () =>
+      fromNumbers.filter(
+        (item) => ownerVisibility[item.number] !== false
+      ),
+    [fromNumbers, ownerVisibility]
+  );
+
+  const selectedOwnedNumber = useMemo(
+    () =>
+      fromNumbers.find(
+        (item) => item.number === (ownedNumberEditorTarget || selectedOwner)
+      ) || null,
+    [fromNumbers, ownedNumberEditorTarget, selectedOwner]
+  );
 
   const appendToConversationDraft = useCallback((value) => {
     const nextValue = String(value || "").trim();
@@ -363,6 +464,174 @@ function App({ routeView = "app" }) {
     }
   };
 
+  const loadOwnedNumberTags = async () => {
+    try {
+      const response = await fetch(`${baseUrl}/numbers/from/tags`);
+      if (!response.ok) {
+        return;
+      }
+      const data = await response.json().catch(() => ({}));
+      const tags = Array.isArray(data?.tags)
+        ? data.tags.map((item) => normalizeOwnedNumberTag(item)).filter(Boolean)
+        : [];
+      setOwnedNumberTagOptions(tags);
+    } catch {
+      setOwnedNumberTagOptions([]);
+    }
+  };
+
+  const showFloatingToast = (message, kind = "success") => {
+    if (toastTimeoutRef.current) {
+      clearTimeout(toastTimeoutRef.current);
+      toastTimeoutRef.current = null;
+    }
+    if (toastDismissRef.current) {
+      clearTimeout(toastDismissRef.current);
+      toastDismissRef.current = null;
+    }
+
+    const id = Date.now();
+    setFloatingToast({ id, message, kind, visible: true });
+
+    toastTimeoutRef.current = setTimeout(() => {
+      setFloatingToast((prev) => (prev?.id === id ? { ...prev, visible: false } : prev));
+      toastDismissRef.current = setTimeout(() => {
+        setFloatingToast((prev) => (prev?.id === id ? null : prev));
+      }, 300);
+    }, 3000);
+  };
+
+  const openOwnedNumberEditor = (ownerNumber = selectedOwner) => {
+    const target = fromNumbers.find((item) => item.number === ownerNumber);
+    if (!target) {
+      return;
+    }
+
+    const selectedTags = Array.isArray(target.tags)
+      ? target.tags.map((item) => normalizeOwnedNumberTag(item)).filter(Boolean)
+      : [];
+
+    setOwnedNumberEditorTarget(target.number);
+    setOwnedNumberDraft({
+      description: target.description || "",
+      purpose: target.purpose || "",
+      selectedTags,
+      customTagsInput: ""
+    });
+    setOwnedNumberEditorOpen(true);
+  };
+
+  const closeOwnedNumberEditor = () => {
+    setOwnedNumberEditorOpen(false);
+    setOwnedNumberEditorTarget("");
+  };
+
+  const toggleOwnedNumberTag = (tag) => {
+    const normalized = normalizeOwnedNumberTag(tag);
+    if (!normalized) {
+      return;
+    }
+
+    setOwnedNumberDraft((prev) => {
+      const hasTag = prev.selectedTags.includes(normalized);
+      return {
+        ...prev,
+        selectedTags: hasTag
+          ? prev.selectedTags.filter((item) => item !== normalized)
+          : [...prev.selectedTags, normalized]
+      };
+    });
+  };
+
+  const saveOwnedNumberMetadata = async () => {
+    if (!selectedOwnedNumber?.number) {
+      return;
+    }
+
+    const ownerNumber = selectedOwnedNumber.number;
+    const name = String(ownedNumberDraft.description || "").trim();
+    const purpose = String(ownedNumberDraft.purpose || "").trim();
+    const customTags = parseCustomTags(ownedNumberDraft.customTagsInput);
+    const tags = [...ownedNumberDraft.selectedTags, ...customTags]
+      .map((item) => normalizeOwnedNumberTag(item))
+      .filter(Boolean)
+      .filter((item, index, list) => list.indexOf(item) === index);
+
+    closeOwnedNumberEditor();
+
+    try {
+      const response = await fetch(
+        `${baseUrl}/numbers/from/${encodeURIComponent(ownerNumber)}`,
+        {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            description: name,
+            purpose,
+            tags
+          })
+        }
+      );
+
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(data?.error || "Failed to save owned number details");
+      }
+
+      const updated = data?.number;
+      if (updated?.number) {
+        setFromNumbers((prev) =>
+          prev.map((item) =>
+            item.number === updated.number
+              ? { ...item, ...updated }
+              : item
+          )
+        );
+      }
+
+      const nameLabel = name || "Unnamed";
+      showFloatingToast(`${nameLabel} - ${ownerNumber} was updated successfully`, "success");
+    } catch (error) {
+      showFloatingToast(error.message || "Failed to save number details", "error");
+    }
+  };
+
+  const toggleOwnerVisibility = (ownerNumber, checked) => {
+    if (!ownerNumber) {
+      return;
+    }
+    setOwnerVisibility((prev) => ({
+      ...prev,
+      [ownerNumber]: Boolean(checked)
+    }));
+  };
+
+  const syncOwnedNumbers = async () => {
+    setNumberSyncStatus({ loading: true, error: "", success: "" });
+
+    try {
+      const response = await fetch(`${baseUrl}/numbers/sync-owned`, {
+        method: "POST"
+      });
+      const data = await response.json().catch(() => ({}));
+
+      if (!response.ok) {
+        throw new Error(data?.error || "Failed to sync owned numbers");
+      }
+
+      await loadNumbers();
+
+      const syncedCount = Number(data?.synced || 0);
+      setNumberSyncStatus({
+        loading: false,
+        error: "",
+        success: `Synced ${syncedCount} owned number${syncedCount === 1 ? "" : "s"} from Telnyx`
+      });
+    } catch (error) {
+      setNumberSyncStatus({ loading: false, error: error.message, success: "" });
+    }
+  };
+
   const loadConversations = async (ownerNumber, options = {}) => {
     const { silent = false, restoreSelection = false } = options;
     if (!ownerNumber) {
@@ -382,11 +651,24 @@ function App({ routeView = "app" }) {
       const selectedCounterparty = data.selectedCounterparty || "";
       setConversations(nextConversations);
       setSelectedConversation((prev) => {
+        const pinned = pinnedManualConversationRef.current;
+        if (
+          pinned?.owner === ownerNumber &&
+          pinned?.counterparty &&
+          (!restoreSelection || prev === pinned.counterparty)
+        ) {
+          return pinned.counterparty;
+        }
+
         const prevExists = nextConversations.some(
           (item) => item.counterparty === prev
         );
 
         if (!restoreSelection && prevExists) {
+          return prev;
+        }
+
+        if (!restoreSelection && prev) {
           return prev;
         }
 
@@ -398,6 +680,10 @@ function App({ routeView = "app" }) {
         }
 
         if (prevExists) {
+          return prev;
+        }
+
+        if (!nextConversations.length && prev) {
           return prev;
         }
 
@@ -604,9 +890,13 @@ function App({ routeView = "app" }) {
   };
 
   useEffect(() => {
-    loadMessages();
-    loadNumbers();
-    loadEvents();
+    const hydrate = async () => {
+      await Promise.all([loadMessages(), loadNumbers(), loadEvents(), loadOwnedNumberTags()]);
+      if (syncOwnedOnLoad) {
+        await syncOwnedNumbers();
+      }
+    };
+    hydrate();
   }, [baseUrl]);
 
   useEffect(() => {
@@ -616,10 +906,21 @@ function App({ routeView = "app" }) {
   }, [activeView]);
 
   useEffect(() => {
-    if (!selectedOwner && fromNumbers.length > 0) {
-      setSelectedOwner(fromNumbers[0].number);
+    if (visibleFromNumbers.length === 0) {
+      if (selectedOwner) {
+        setSelectedOwner("");
+      }
+      return;
     }
-  }, [fromNumbers, selectedOwner]);
+
+    const selectedStillVisible = visibleFromNumbers.some(
+      (item) => item.number === selectedOwner
+    );
+
+    if (!selectedOwner || !selectedStillVisible) {
+      setSelectedOwner(visibleFromNumbers[0].number);
+    }
+  }, [visibleFromNumbers, selectedOwner]);
 
   useEffect(() => {
     if (!selectedOwner) {
@@ -643,6 +944,72 @@ function App({ routeView = "app" }) {
     }
     loadConversationMessages(selectedOwner, selectedConversation);
   }, [selectedOwner, selectedConversation]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+    window.localStorage.setItem(
+      SYNC_ON_LOAD_STORAGE_KEY,
+      syncOwnedOnLoad ? "true" : "false"
+    );
+  }, [syncOwnedOnLoad]);
+
+  useEffect(() => {
+    if (!Array.isArray(fromNumbers) || fromNumbers.length === 0) {
+      return;
+    }
+
+    setOwnerVisibility((prev) => {
+      const next = { ...prev };
+      let changed = false;
+
+      for (const item of fromNumbers) {
+        if (!(item.number in next)) {
+          next[item.number] = true;
+          changed = true;
+        }
+      }
+
+      return changed ? next : prev;
+    });
+  }, [fromNumbers]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+    window.localStorage.setItem(
+      OWNER_VISIBILITY_STORAGE_KEY,
+      JSON.stringify(ownerVisibility)
+    );
+  }, [ownerVisibility]);
+
+  useEffect(() => {
+    if (!ownedNumberEditorOpen) {
+      return;
+    }
+
+    const handleEsc = (event) => {
+      if (event.key === "Escape") {
+        closeOwnedNumberEditor();
+      }
+    };
+
+    window.addEventListener("keydown", handleEsc);
+    return () => window.removeEventListener("keydown", handleEsc);
+  }, [ownedNumberEditorOpen]);
+
+  useEffect(() => {
+    return () => {
+      if (toastTimeoutRef.current) {
+        clearTimeout(toastTimeoutRef.current);
+      }
+      if (toastDismissRef.current) {
+        clearTimeout(toastDismissRef.current);
+      }
+    };
+  }, []);
 
   useEffect(() => {
     const handleClick = (event) => {
@@ -785,6 +1152,48 @@ function App({ routeView = "app" }) {
       from: prev.to,
       to: prev.from
     }));
+  };
+
+  const openNewConversationModal = () => {
+    setNewConversationValue("");
+    setNewConversationError("");
+    setNewConversationModalOpen(true);
+  };
+
+  const closeNewConversationModal = () => {
+    setNewConversationModalOpen(false);
+    setNewConversationError("");
+  };
+
+  const submitNewConversation = () => {
+    const counterparty = normalizeConversationTarget(newConversationValue);
+    if (!counterparty) {
+      setNewConversationError("Enter a valid phone number.");
+      return;
+    }
+
+    const ownerNumber = selectedOwner || fromNumbers[0]?.number || "";
+    if (!ownerNumber) {
+      setNewConversationError("No owned number is available yet.");
+      return;
+    }
+
+    if (!selectedOwner) {
+      setSelectedOwner(ownerNumber);
+    }
+
+    pinnedManualConversationRef.current = {
+      owner: ownerNumber,
+      counterparty
+    };
+
+    setConversationView("recent");
+    setMessageFilter("active");
+    setSelectedConversation(counterparty);
+    setConversationDraft("");
+    setConversationMenuId("");
+    setNewConversationModalOpen(false);
+    setNewConversationError("");
   };
 
   const fromMeta = useMemo(() => analyzeNumber(form.from), [form.from]);
@@ -1441,6 +1850,13 @@ function App({ routeView = "app" }) {
               >
                 Dev Consoles
               </button>
+              <button
+                type="button"
+                className="nav-menu-item"
+                onClick={() => navigate("/admin/my-numbers")}
+              >
+                My Numbers
+              </button>
             </div>
           </div>
         </div>
@@ -1455,26 +1871,52 @@ function App({ routeView = "app" }) {
                 <div className="conversation-title-row">
                   <h2>Conversation Overview</h2>
                   <div className="owner-row owner-row-inline">
-                    {fromNumbers.length === 0 ? (
+                    {visibleFromNumbers.length === 0 ? (
                       <p className="muted owner-row-empty">No owned numbers yet.</p>
                     ) : (
-                      fromNumbers.map((item) => (
+                      visibleFromNumbers.map((item) => (
                         <button
                           key={item.id}
                           type="button"
-                          className={`owner-chip ${
+                          className={`owner-chip owner-chip-with-badge ${
                             selectedOwner === item.number ? "active" : ""
                           }`}
                           onClick={() => {
                             setSelectedOwner(item.number);
                             setSelectedConversation("");
                             persistedSelectionRef.current = "";
+                            pinnedManualConversationRef.current = {
+                              owner: "",
+                              counterparty: ""
+                            };
                           }}
                         >
-                          {item.number}
+                          <span className="owner-chip-name">
+                            {item.description || item.number}
+                          </span>
+                          {item.description ? (
+                            <span className="owner-chip-number-hover">{item.number}</span>
+                          ) : null}
+                          {Number(item.unreadCount || 0) > 0 ? (
+                            <span className="owner-unread-badge">
+                              {Number(item.unreadCount) > 99 ? "99+" : Number(item.unreadCount)}
+                            </span>
+                          ) : null}
                         </button>
                       ))
                     )}
+                    <button
+                      type="button"
+                      className={`owner-chip action-chip ${ownedNumberEditorOpen ? "active" : ""}`}
+                      onClick={() =>
+                        ownedNumberEditorOpen
+                          ? closeOwnedNumberEditor()
+                          : openOwnedNumberEditor(selectedOwner)
+                      }
+                      disabled={!selectedOwnedNumber}
+                    >
+                      {ownedNumberEditorOpen ? "Close Number Editor" : "Edit Number"}
+                    </button>
                   </div>
                   {selectedConversation ? (
                     <div className="message-view conversation-message-view">
@@ -1690,12 +2132,20 @@ function App({ routeView = "app" }) {
                         onClick={() => {
                           setSelectedConversation(item.counterparty);
                           setConversationMenuId("");
+                          pinnedManualConversationRef.current = {
+                            owner: "",
+                            counterparty: ""
+                          };
                         }}
                         onKeyDown={(event) => {
                           if (event.key === "Enter" || event.key === " ") {
                             event.preventDefault();
                             setSelectedConversation(item.counterparty);
                             setConversationMenuId("");
+                            pinnedManualConversationRef.current = {
+                              owner: "",
+                              counterparty: ""
+                            };
                           }
                         }}
                       >
@@ -1865,6 +2315,18 @@ function App({ routeView = "app" }) {
                 )}
                 {conversationStatus.error ? (
                   <p className="error">{conversationStatus.error}</p>
+                ) : null}
+                {!isArchiveView && !isBookmarkedView ? (
+                  <button
+                    type="button"
+                    className="conversation-add-button"
+                      onClick={openNewConversationModal}
+                    disabled={!selectedOwner && fromNumbers.length === 0}
+                    title="Start a new conversation"
+                    aria-label="Start a new conversation"
+                  >
+                    +
+                  </button>
                 ) : null}
               </div>
 
@@ -2242,6 +2704,182 @@ function App({ routeView = "app" }) {
         ) : null}
       </div>
 
+      {newConversationModalOpen ? (
+        <div
+          className="new-conversation-modal-backdrop"
+          role="presentation"
+          onClick={closeNewConversationModal}
+        >
+          <div
+            className="new-conversation-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-label="Start new conversation"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="new-conversation-modal-header">
+              <h3>Start New Conversation</h3>
+              <button
+                type="button"
+                className="icon-button"
+                onClick={closeNewConversationModal}
+                aria-label="Close"
+              >
+                ×
+              </button>
+            </div>
+            <div className="new-conversation-modal-body">
+              <label htmlFor="new-conversation-number">To number</label>
+              <input
+                id="new-conversation-number"
+                type="tel"
+                placeholder="e.g. 3372580880 or +13372580880"
+                value={newConversationValue}
+                onChange={(event) => {
+                  setNewConversationValue(event.target.value);
+                  if (newConversationError) {
+                    setNewConversationError("");
+                  }
+                }}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") {
+                    event.preventDefault();
+                    submitNewConversation();
+                  }
+                }}
+                autoFocus
+              />
+              {newConversationError ? <p className="error">{newConversationError}</p> : null}
+              <p className="muted">If no country code is entered, this defaults to US (+1).</p>
+            </div>
+            <div className="new-conversation-modal-actions">
+              <button type="button" className="button secondary" onClick={closeNewConversationModal}>
+                Cancel
+              </button>
+              <button type="button" onClick={submitNewConversation}>
+                Start Conversation
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {ownedNumberEditorOpen && selectedOwnedNumber ? (
+        <div
+          className="owned-number-modal-backdrop"
+          role="presentation"
+          onClick={closeOwnedNumberEditor}
+        >
+          <div
+            className="owned-number-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-label="Edit owned number"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="owned-number-modal-header">
+              <h3>Edit Owned Number</h3>
+              <button
+                type="button"
+                className="icon-button"
+                onClick={closeOwnedNumberEditor}
+                aria-label="Close"
+              >
+                ×
+              </button>
+            </div>
+            <div className="owned-number-modal-body">
+              <p className="muted">{selectedOwnedNumber.number}</p>
+              <label>
+                Name
+                <input
+                  type="text"
+                  value={ownedNumberDraft.description}
+                  onChange={(event) =>
+                    setOwnedNumberDraft((prev) => ({
+                      ...prev,
+                      description: event.target.value
+                    }))
+                  }
+                  placeholder="e.g. Main sales line"
+                  autoFocus
+                />
+              </label>
+              <label>
+                Purpose
+                <input
+                  type="text"
+                  value={ownedNumberDraft.purpose}
+                  onChange={(event) =>
+                    setOwnedNumberDraft((prev) => ({
+                      ...prev,
+                      purpose: event.target.value
+                    }))
+                  }
+                  placeholder="e.g. inbound support"
+                />
+              </label>
+              <div className="owned-number-tag-wrap">
+                <p className="message-view-label">Tags</p>
+                <div className="owned-number-tags">
+                  {ownedNumberTagOptions.length > 0
+                    ? ownedNumberTagOptions.map((tag) => {
+                        const active = ownedNumberDraft.selectedTags.includes(tag);
+                        return (
+                          <button
+                            key={tag}
+                            type="button"
+                            className={`owner-chip action-chip ${active ? "active" : ""}`}
+                            onClick={() => toggleOwnedNumberTag(tag)}
+                          >
+                            {tag}
+                          </button>
+                        );
+                      })
+                    : null}
+                </div>
+                <label>
+                  Custom tags (comma-separated)
+                  <input
+                    type="text"
+                    value={ownedNumberDraft.customTagsInput}
+                    onChange={(event) =>
+                      setOwnedNumberDraft((prev) => ({
+                        ...prev,
+                        customTagsInput: event.target.value
+                      }))
+                    }
+                    placeholder="vip, after-hours"
+                  />
+                </label>
+              </div>
+            </div>
+            <div className="owned-number-modal-actions">
+              <button
+                type="button"
+                className="button secondary"
+                onClick={closeOwnedNumberEditor}
+              >
+                Cancel
+              </button>
+              <button type="button" onClick={saveOwnedNumberMetadata}>
+                Save
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {floatingToast ? (
+        <div
+          className={`floating-toast ${floatingToast.visible ? "visible" : ""} ${
+            floatingToast.kind === "error" ? "error" : "success"
+          }`}
+        >
+          {floatingToast.message}
+        </div>
+      ) : null}
+
       {activeView === "dev" ? <div className="section-divider" /> : null}
 
       {activeView === "dev" ? (
@@ -2498,6 +3136,76 @@ function App({ routeView = "app" }) {
         </section>
       ) : activeView === "contacts" ? (
         <ContactsManager baseUrl={baseUrl} />
+      ) : activeView === "myNumbers" ? (
+        <section className="my-numbers-view">
+          <div className="db-head">
+            <div>
+              <p className="eyebrow">Admin</p>
+              <h2>My Numbers</h2>
+              <p className="subtitle">
+                Manage number names, sync behavior, and which owned numbers appear in Conversation Overview.
+              </p>
+            </div>
+          </div>
+
+          <div className="my-numbers-panel">
+            <div className="my-numbers-toolbar">
+              <label className="my-numbers-checkbox">
+                <input
+                  type="checkbox"
+                  checked={syncOwnedOnLoad}
+                  onChange={(event) => setSyncOwnedOnLoad(event.target.checked)}
+                />
+                Sync owned numbers on load
+              </label>
+              <button
+                type="button"
+                className="ghost"
+                onClick={syncOwnedNumbers}
+                disabled={numberSyncStatus.loading}
+              >
+                {numberSyncStatus.loading ? "Syncing..." : "Sync Now"}
+              </button>
+            </div>
+            {numberSyncStatus.error ? <p className="error">{numberSyncStatus.error}</p> : null}
+            {numberSyncStatus.success ? <p className="success">{numberSyncStatus.success}</p> : null}
+
+            <div className="my-numbers-list">
+              {fromNumbers.length === 0 ? (
+                <p className="muted">No owned numbers found.</p>
+              ) : (
+                fromNumbers.map((item) => (
+                  <div key={item.id} className="my-number-row">
+                    <label className="my-numbers-checkbox">
+                      <input
+                        type="checkbox"
+                        checked={ownerVisibility[item.number] !== false}
+                        onChange={(event) =>
+                          toggleOwnerVisibility(item.number, event.target.checked)
+                        }
+                      />
+                      Show in conversations
+                    </label>
+                    <div className="my-number-details">
+                      <strong>{item.description || "(unnamed)"}</strong>
+                      <span>{item.number}</span>
+                    </div>
+                    <button
+                      type="button"
+                      className="owner-chip action-chip"
+                      onClick={() => openOwnedNumberEditor(item.number)}
+                    >
+                      Edit
+                    </button>
+                  </div>
+                ))
+              )}
+            </div>
+            <p className="muted">
+              {visibleFromNumbers.length} of {fromNumbers.length} numbers visible in conversation view.
+            </p>
+          </div>
+        </section>
       ) : activeView === "database" ? (
         <section className="db-view">
           <div className="db-head">

@@ -6,5 +6,6 @@ export const routes = [
   { path: "/contacts", element: <MainApp routeView="contacts" /> },
   { path: "/admin/dev-consoles", element: <MainApp routeView="dev" /> },
   { path: "/admin/database", element: <MainApp routeView="database" /> },
+  { path: "/admin/my-numbers", element: <MainApp routeView="myNumbers" /> },
   { path: "*", element: <Navigate to="/" replace /> }
 ];

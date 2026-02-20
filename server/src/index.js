@@ -188,13 +188,34 @@ const tableConfig = {
     defaultSort: "lastMessageAt"
   },
   FromNumber: {
-    fields: ["id", "number", "firstUsedAt", "lastUsedAt"],
-    searchableFields: ["number"],
+    fields: [
+      "id",
+      "number",
+      "description",
+      "purpose",
+      "tags",
+      "dateAdded",
+      "firstUsedAt",
+      "lastUsedAt",
+      "lastSentAt",
+      "lastReceivedAt",
+      "totalMessagesSent",
+      "totalMessagesReceived"
+    ],
+    searchableFields: ["number", "description", "purpose"],
     fieldTypes: {
       id: "string",
       number: "string",
+      description: "string",
+      purpose: "string",
+      tags: "json",
+      dateAdded: "datetime",
       firstUsedAt: "datetime",
-      lastUsedAt: "datetime"
+      lastUsedAt: "datetime",
+      lastSentAt: "datetime",
+      lastReceivedAt: "datetime",
+      totalMessagesSent: "number",
+      totalMessagesReceived: "number"
     },
     defaultSort: "lastUsedAt"
   },
@@ -417,6 +438,7 @@ const MICROSOFT_CLIENT_SECRET = process.env.MICROSOFT_CLIENT_SECRET || "";
 const MICROSOFT_REDIRECT_URI = process.env.MICROSOFT_REDIRECT_URI || "";
 const oauthStateStore = new Map();
 const OAUTH_STATE_TTL_MS = 10 * 60 * 1000;
+const DEFAULT_OWNED_NUMBER_TAGS = ["work", "personal", "customer", "automation"];
 
 const cleanString = (value) => {
   if (value === null || value === undefined) {
@@ -424,6 +446,43 @@ const cleanString = (value) => {
   }
   const trimmed = String(value).trim();
   return trimmed.length > 0 ? trimmed : null;
+};
+
+const normalizeOwnedNumberTags = (value) => {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  const deduped = new Set();
+  for (const item of value) {
+    const normalized = cleanString(item)?.toLowerCase();
+    if (!normalized) {
+      continue;
+    }
+    deduped.add(normalized);
+  }
+
+  return Array.from(deduped).slice(0, 20);
+};
+
+const normalizeDateOrNow = (value) => {
+  const candidate = value ? new Date(value) : new Date();
+  if (Number.isNaN(candidate.getTime())) {
+    return new Date();
+  }
+  return candidate;
+};
+
+const maxDate = (left, right) => {
+  if (!left) return right || null;
+  if (!right) return left || null;
+  return new Date(left) >= new Date(right) ? left : right;
+};
+
+const minDate = (left, right) => {
+  if (!left) return right || null;
+  if (!right) return left || null;
+  return new Date(left) <= new Date(right) ? left : right;
 };
 
 const allowedAttachmentKinds = new Set([
@@ -1444,6 +1503,125 @@ const updateConversationForMessage = async ({ message, countUnread }) => {
   });
 };
 
+const getNumberPairForMessage = (message) => {
+  if (!message) {
+    return { ownerNumber: null, counterparty: null };
+  }
+
+  const direction = cleanString(message.direction);
+  const from = cleanString(message.from);
+  const to = cleanString(message.to);
+
+  if (direction === "inbound") {
+    return {
+      ownerNumber: to,
+      counterparty: from
+    };
+  }
+
+  return {
+    ownerNumber: from,
+    counterparty: to
+  };
+};
+
+const upsertOwnedNumberUsage = async ({ ownerNumber, direction, occurredAt, incrementUsage = true }) => {
+  const safeOwner = cleanString(ownerNumber);
+  if (!safeOwner) {
+    return { ownerUpserted: false };
+  }
+
+  const safeDirection = cleanString(direction);
+  const eventTime = normalizeDateOrNow(occurredAt);
+  const existing = await prisma.fromNumber.findUnique({
+    where: { number: safeOwner }
+  });
+
+  if (!existing) {
+    const createData = {
+      number: safeOwner,
+      dateAdded: eventTime,
+      firstUsedAt: eventTime,
+      lastUsedAt: eventTime,
+      lastSentAt: safeDirection === "outbound" ? eventTime : null,
+      lastReceivedAt: safeDirection === "inbound" ? eventTime : null,
+      totalMessagesSent: safeDirection === "outbound" ? 1 : 0,
+      totalMessagesReceived: safeDirection === "inbound" ? 1 : 0
+    };
+
+    await prisma.fromNumber.create({ data: createData });
+    return { ownerUpserted: true };
+  }
+
+  const updateData = {
+    firstUsedAt: minDate(existing.firstUsedAt, eventTime),
+    lastUsedAt: maxDate(existing.lastUsedAt, eventTime)
+  };
+
+  if (safeDirection === "outbound") {
+    updateData.lastSentAt = maxDate(existing.lastSentAt, eventTime);
+    if (incrementUsage) {
+      updateData.totalMessagesSent = { increment: 1 };
+    }
+  }
+
+  if (safeDirection === "inbound") {
+    updateData.lastReceivedAt = maxDate(existing.lastReceivedAt, eventTime);
+    if (incrementUsage) {
+      updateData.totalMessagesReceived = { increment: 1 };
+    }
+  }
+
+  await prisma.fromNumber.update({
+    where: { number: safeOwner },
+    data: updateData
+  });
+
+  return { ownerUpserted: true };
+};
+
+const upsertNumberPair = async ({ ownerNumber, counterparty, direction, occurredAt, incrementUsage = true }) => {
+  const safeOwner = cleanString(ownerNumber);
+  const safeCounterparty = cleanString(counterparty);
+
+  if (!safeOwner || !safeCounterparty) {
+    return { ownerUpserted: false, counterpartyUpserted: false };
+  }
+
+  const eventTime = normalizeDateOrNow(occurredAt);
+
+  await Promise.all([
+    upsertOwnedNumberUsage({
+      ownerNumber: safeOwner,
+      direction,
+      occurredAt: eventTime,
+      incrementUsage
+    }),
+    prisma.toNumber.upsert({
+      where: { number: safeCounterparty },
+      update: { lastUsedAt: eventTime },
+      create: {
+        number: safeCounterparty,
+        firstUsedAt: eventTime,
+        lastUsedAt: eventTime
+      }
+    })
+  ]);
+
+  return { ownerUpserted: true, counterpartyUpserted: true };
+};
+
+const upsertNumberPairForMessage = async (message, options = {}) => {
+  const { ownerNumber, counterparty } = getNumberPairForMessage(message);
+  return upsertNumberPair({
+    ownerNumber,
+    counterparty,
+    direction: message?.direction,
+    occurredAt: getMessageTime(message),
+    incrementUsage: options.incrementUsage !== false
+  });
+};
+
 const resolveEventStatus = (payload) =>
   payload?.to?.[0]?.status || payload?.status || null;
 
@@ -2116,10 +2294,82 @@ app.post("/db/table/:name/clear", async (req, res) => {
 });
 
 app.get("/numbers/from", async (_req, res) => {
-  const numbers = await prisma.fromNumber.findMany({
-    orderBy: { lastUsedAt: "desc" }
+  const [numbers, unreadByOwner] = await Promise.all([
+    prisma.fromNumber.findMany({
+      orderBy: { lastUsedAt: "desc" }
+    }),
+    prisma.conversation.groupBy({
+      by: ["ownerNumber"],
+      where: {
+        unreadCount: { gt: 0 },
+        state: { not: "DELETED" }
+      },
+      _sum: {
+        unreadCount: true
+      }
+    })
+  ]);
+
+  const unreadLookup = new Map(
+    unreadByOwner.map((row) => [row.ownerNumber, Number(row._sum?.unreadCount || 0)])
+  );
+
+  res.json({
+    numbers: numbers.map((item) => ({
+      ...item,
+      unreadCount: unreadLookup.get(item.number) || 0
+    }))
   });
-  res.json({ numbers });
+});
+
+app.get("/numbers/from/tags", async (_req, res) => {
+  res.json({
+    tags: DEFAULT_OWNED_NUMBER_TAGS
+  });
+});
+
+app.patch("/numbers/from/:number", async (req, res) => {
+  const number = cleanString(req.params.number);
+  if (!number) {
+    return res.status(400).json({ error: "number is required" });
+  }
+
+  const description = req.body?.description;
+  const purpose = req.body?.purpose;
+  const tags = req.body?.tags;
+
+  const updateData = {};
+
+  if (Object.prototype.hasOwnProperty.call(req.body || {}, "description")) {
+    updateData.description = cleanString(description);
+  }
+
+  if (Object.prototype.hasOwnProperty.call(req.body || {}, "purpose")) {
+    updateData.purpose = cleanString(purpose);
+  }
+
+  if (Object.prototype.hasOwnProperty.call(req.body || {}, "tags")) {
+    if (!Array.isArray(tags)) {
+      return res.status(400).json({ error: "tags must be an array" });
+    }
+    updateData.tags = normalizeOwnedNumberTags(tags);
+  }
+
+  if (Object.keys(updateData).length === 0) {
+    return res.status(400).json({ error: "At least one field is required" });
+  }
+
+  const existing = await prisma.fromNumber.findUnique({ where: { number } });
+  if (!existing) {
+    return res.status(404).json({ error: "Owned number not found" });
+  }
+
+  const updated = await prisma.fromNumber.update({
+    where: { number },
+    data: updateData
+  });
+
+  res.json({ number: updated });
 });
 
 app.get("/numbers/to", async (_req, res) => {
@@ -2502,6 +2752,9 @@ const syncInboundMessages = async ({ since }) => {
           });
         }
         await updateConversationForMessage({ message: savedMessage, countUnread: false });
+        await upsertNumberPairForMessage(savedMessage, {
+          incrementUsage: !existing
+        });
         synced += 1;
       } catch (error) {
         skipped += 1;
@@ -2514,6 +2767,191 @@ const syncInboundMessages = async ({ since }) => {
   return { synced, skipped };
 };
 
+const extractOwnedNumberFromTelnyxPhoneRecord = (record) => {
+  if (!record || typeof record !== "object") {
+    return null;
+  }
+
+  const candidates = [
+    record.phone_number,
+    record.number,
+    record?.messaging?.phone_number,
+    record?.connection?.phone_number,
+    record?.billing_group?.phone_number,
+    record?.record?.phone_number
+  ];
+
+  for (const candidate of candidates) {
+    const normalized = cleanString(candidate);
+    if (normalized) {
+      return normalized;
+    }
+  }
+
+  return null;
+};
+
+const syncOwnedNumbersFromTelnyx = async () => {
+  if (!TELNYX_API_KEY) {
+    throw new Error("TELNYX_API_KEY is not set");
+  }
+
+  const pageSize = 100;
+  let pageNumber = 1;
+  let total = 0;
+  let synced = 0;
+  let skipped = 0;
+
+  while (pageNumber <= 200) {
+    const response = await axios.get("https://api.telnyx.com/v2/phone_numbers", {
+      headers: {
+        Authorization: `Bearer ${TELNYX_API_KEY}`
+      },
+      params: {
+        "page[number]": pageNumber,
+        "page[size]": pageSize
+      }
+    });
+
+    const records = Array.isArray(response.data?.data) ? response.data.data : [];
+    if (records.length === 0) {
+      break;
+    }
+
+    for (const record of records) {
+      total += 1;
+      const ownedNumber = extractOwnedNumberFromTelnyxPhoneRecord(record);
+      if (!ownedNumber) {
+        skipped += 1;
+        continue;
+      }
+
+      await prisma.fromNumber.upsert({
+        where: { number: ownedNumber },
+        update: {},
+        create: { number: ownedNumber }
+      });
+
+      synced += 1;
+    }
+
+    pageNumber += 1;
+  }
+
+  return {
+    total,
+    synced,
+    skipped,
+    pagesFetched: pageNumber - 1
+  };
+};
+
+const backfillNumbersFromMessages = async () => {
+  const messages = await prisma.message.findMany({
+    select: {
+      direction: true,
+      from: true,
+      to: true,
+      occurredAt: true,
+      createdAt: true
+    }
+  });
+
+  const uniquePairs = new Map();
+  const ownedStatsByNumber = new Map();
+  const toStatsByNumber = new Map();
+
+  for (const message of messages) {
+    const { ownerNumber, counterparty } = getNumberPairForMessage(message);
+    if (!ownerNumber || !counterparty) {
+      continue;
+    }
+
+    const messageTime = getMessageTime(message);
+
+    const ownedExisting = ownedStatsByNumber.get(ownerNumber) || {
+      firstUsedAt: null,
+      lastUsedAt: null,
+      lastSentAt: null,
+      lastReceivedAt: null,
+      totalMessagesSent: 0,
+      totalMessagesReceived: 0
+    };
+
+    ownedExisting.firstUsedAt = minDate(ownedExisting.firstUsedAt, messageTime);
+    ownedExisting.lastUsedAt = maxDate(ownedExisting.lastUsedAt, messageTime);
+
+    if (message.direction === "outbound") {
+      ownedExisting.totalMessagesSent += 1;
+      ownedExisting.lastSentAt = maxDate(ownedExisting.lastSentAt, messageTime);
+    } else {
+      ownedExisting.totalMessagesReceived += 1;
+      ownedExisting.lastReceivedAt = maxDate(ownedExisting.lastReceivedAt, messageTime);
+    }
+
+    ownedStatsByNumber.set(ownerNumber, ownedExisting);
+
+    const toExisting = toStatsByNumber.get(counterparty) || {
+      firstUsedAt: null,
+      lastUsedAt: null
+    };
+    toExisting.firstUsedAt = minDate(toExisting.firstUsedAt, messageTime);
+    toExisting.lastUsedAt = maxDate(toExisting.lastUsedAt, messageTime);
+    toStatsByNumber.set(counterparty, toExisting);
+
+    const key = `${ownerNumber}::${counterparty}`;
+    if (!uniquePairs.has(key)) {
+      uniquePairs.set(key, { ownerNumber, counterparty });
+    }
+  }
+
+  await mapWithConcurrency(Array.from(ownedStatsByNumber.entries()), 10, async ([number, stats]) => {
+    await prisma.fromNumber.upsert({
+      where: { number },
+      update: {
+        firstUsedAt: stats.firstUsedAt || new Date(),
+        lastUsedAt: stats.lastUsedAt || new Date(),
+        lastSentAt: stats.lastSentAt,
+        lastReceivedAt: stats.lastReceivedAt,
+        totalMessagesSent: stats.totalMessagesSent,
+        totalMessagesReceived: stats.totalMessagesReceived
+      },
+      create: {
+        number,
+        dateAdded: stats.firstUsedAt || new Date(),
+        firstUsedAt: stats.firstUsedAt || new Date(),
+        lastUsedAt: stats.lastUsedAt || new Date(),
+        lastSentAt: stats.lastSentAt,
+        lastReceivedAt: stats.lastReceivedAt,
+        totalMessagesSent: stats.totalMessagesSent,
+        totalMessagesReceived: stats.totalMessagesReceived
+      }
+    });
+  });
+
+  await mapWithConcurrency(Array.from(toStatsByNumber.entries()), 10, async ([number, stats]) => {
+    await prisma.toNumber.upsert({
+      where: { number },
+      update: {
+        firstUsedAt: stats.firstUsedAt || new Date(),
+        lastUsedAt: stats.lastUsedAt || new Date()
+      },
+      create: {
+        number,
+        firstUsedAt: stats.firstUsedAt || new Date(),
+        lastUsedAt: stats.lastUsedAt || new Date()
+      }
+    });
+  });
+
+  return {
+    totalMessagesScanned: messages.length,
+    uniquePairsUpserted: uniquePairs.size,
+    ownedNumbersUpdated: ownedStatsByNumber.size,
+    counterpartiesUpdated: toStatsByNumber.size
+  };
+};
+
 app.post("/messages/sync", async (req, res) => {
   try {
     const { since } = req.body || {};
@@ -2524,6 +2962,28 @@ app.post("/messages/sync", async (req, res) => {
     const details = error.response?.data || { message: error.message };
     console.error("Inbound sync failed", status, details);
     res.status(status).json({ error: "Sync failed", details });
+  }
+});
+
+app.post("/numbers/sync-owned", async (_req, res) => {
+  try {
+    const result = await syncOwnedNumbersFromTelnyx();
+    res.json(result);
+  } catch (error) {
+    const status = error.response?.status || 500;
+    const details = error.response?.data || { message: error.message };
+    console.error("Owned number sync failed", status, details);
+    res.status(status).json({ error: "Owned number sync failed", details });
+  }
+});
+
+app.post("/numbers/backfill", async (_req, res) => {
+  try {
+    const result = await backfillNumbersFromMessages();
+    res.json(result);
+  } catch (error) {
+    console.error("Number backfill failed", error);
+    res.status(500).json({ error: "Number backfill failed" });
   }
 });
 
@@ -2638,18 +3098,12 @@ app.post("/messages/send", async (req, res) => {
 
     await updateConversationForMessage({ message: saved, countUnread: false });
 
-    await Promise.all([
-      prisma.fromNumber.upsert({
-        where: { number: from },
-        update: { lastUsedAt: new Date() },
-        create: { number: from }
-      }),
-      prisma.toNumber.upsert({
-        where: { number: to },
-        update: { lastUsedAt: new Date() },
-        create: { number: to }
-      })
-    ]);
+    await upsertNumberPair({
+      ownerNumber: from,
+      counterparty: to,
+      direction: "outbound",
+      occurredAt: getMessageTime(saved)
+    });
 
     const savedWithAttachments = await prisma.message.findUnique({
       where: { id: saved.id },
@@ -2863,6 +3317,9 @@ app.post("/webhooks/telnyx", async (req, res) => {
         });
 
     await updateConversationForMessage({ message: savedMessage, countUnread: true });
+    await upsertNumberPairForMessage(savedMessage, {
+      incrementUsage: !existing
+    });
   } catch (error) {
     console.error("Failed to store webhook message", error);
   }
