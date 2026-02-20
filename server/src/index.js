@@ -42,7 +42,7 @@ const mapWithConcurrency = async (items, limit, mapper) => {
   return results;
 };
 
-const PORT = process.env.PORT || 3001;
+const PORT = process.env.PORT || 3206;
 const TELNYX_API_KEY = process.env.TELNYX_API_KEY || "";
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY || "";
 const OPENAI_TRANSCRIBE_MODEL = process.env.OPENAI_TRANSCRIBE_MODEL || "gpt-4o-transcribe";

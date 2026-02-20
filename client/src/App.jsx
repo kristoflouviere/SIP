@@ -11,7 +11,7 @@ import MicRecordButton from "./features/transcription/MicRecordButton";
 import ComposeAttachmentsControl from "./features/attachments/ComposeAttachmentsControl";
 import "./App.css";
 
-const defaultBaseUrl = "http://localhost:3001";
+const defaultBaseUrl = "http://localhost:3206";
 const loadedConversationOwnersCache = new Set();
 const callingCodeSet = new Set(
   getCountries().map((country) => getCountryCallingCode(country))

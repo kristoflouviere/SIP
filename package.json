@@ -4,6 +4,8 @@
   "description": "Sales Tools 2026 management app",
   "scripts": {
     "dev": "concurrently -k \"npm run dev -w client\" \"npm run dev -w server\"",
+    "dev:stop": "powershell -NoProfile -ExecutionPolicy Bypass -Command \"$ports=5391,3206; $conns=Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue | Where-Object { $ports -contains $_.LocalPort }; if($conns){$conns | Select-Object -ExpandProperty OwningProcess -Unique | ForEach-Object { Stop-Process -Id $_ -Force -ErrorAction SilentlyContinue }}\"",
+    "dev:restart": "npm run dev:stop && npm run dev",
     "build": "npm run build -w client",
     "start": "npm run start -w server",
     "audit:ci": "npm audit --json | node scripts/audit-ci.js"
